@@ -1,0 +1,34 @@
+name: Daily arXiv Map Update
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Midnight daily
+  workflow_dispatch: # Allows manual trigger
+
+permissions:
+  contents: write # Needed to push the updated map to your repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Map Update
+        run: python update_map.py
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 Auto-update arXiv map"
+          branch: main
