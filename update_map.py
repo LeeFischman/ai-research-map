@@ -11,7 +11,7 @@ from transformers import pipeline
 
 DB_PATH = "database.parquet"
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION: ELITE INSTITUTIONS ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
     "Cornell", "UWashington", "UMich", "Georgia Tech", "UT Austin", "UIUC", "NYU", 
@@ -30,6 +30,7 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
+# --- 2. UTILITIES ---
 def fetch_results_with_retry(client, search, max_retries=5):
     for i in range(max_retries):
         try:
@@ -37,13 +38,14 @@ def fetch_results_with_retry(client, search, max_retries=5):
         except Exception as e:
             if "429" in str(e):
                 wait = (i + 1) * 30
+                print(f"⚠️ Rate limited. Retrying in {wait}s...")
                 time.sleep(wait)
             else: raise e
     raise Exception("Max retries exceeded")
 
 def generate_tldrs_local(df):
     if df.empty: return []
-    print(f"🤖 Processing {len(df)} papers...")
+    print(f"🤖 AI Summarizing {len(df)} new papers...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -52,7 +54,6 @@ def generate_tldrs_local(df):
             res = summarizer(prompt, max_new_tokens=30, do_sample=False)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
-        if (i + 1) % 10 == 0: print(f"✅ AI Processed {i+1}/{len(df)}...")
     del summarizer
     gc.collect()
     return tldrs
@@ -61,33 +62,36 @@ def judge_significance(row):
     score = 0
     full_text = f"{row['title']} {row['text_for_embedding']}".lower()
     if INSTITUTION_PATTERN.search(full_text): score += 2
-    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota']): score += 1
+    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']): score += 1
     return "High Priority" if score >= 2 else "Standard"
 
-# --- MAIN LOGIC ---
+def clean_for_labeling(text):
+    """Removes generic words to help the topic engine find specific research niches."""
+    noise = r'\b(model|models|paper|approach|method|algorithm|results|performance|proposed|based|using|data|task|learning|training|framework|system|study)\b'
+    cleaned = re.sub(noise, '', text, flags=re.IGNORECASE)
+    return ' '.join(cleaned.split())
+
+# --- 3. MAIN EXECUTION ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    # Filter database for the last 5 days
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
     # 1. Load existing database
     if os.path.exists(DB_PATH):
         db_df = pd.read_parquet(DB_PATH)
         db_df = db_df[db_df['date'] >= cutoff_date]
-        print(f"Loaded existing database: {len(db_df)} rows.")
+        print(f"✅ Loaded database: {len(db_df)} existing records.")
     else:
         db_df = pd.DataFrame()
-        print("No database found. Initializing.")
+        print("🆕 No database found. Initializing.")
 
-    # 2. Fetch papers from the last 5 days
+    # 2. Fetch papers (Looking back 5 days for catch-up/prefill)
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
-    # We look back 5 days instead of 1 for the prefill
     start_time = now - timedelta(days=5)
     date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
     
-    print(f"🔍 Fetching prefill papers: {date_query}")
-    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=200)
-    
+    print(f"🔍 Fetching papers from: {date_query}")
+    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=250)
     results = fetch_results_with_retry(client, search)
     
     if results:
@@ -99,32 +103,36 @@ if __name__ == "__main__":
             "date": r.published.strftime("%Y-%m-%d")
         } for r in results])
 
-        # Find papers that aren't in our DB yet
+        # Find truly new papers
         if not db_df.empty:
-            new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])]
+            new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
         else:
-            new_data = all_fetched
-
-        print(f"Found {len(new_data)} papers needing AI processing.")
+            new_data = all_fetched.copy()
 
         if not new_data.empty:
+            print(f"✍️ Generating TLDRs for {len(new_data)} new papers...")
             new_data['tldr'] = generate_tldrs_local(new_data)
             new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
-
-            # 3. Merge
+            
+            # Merge
             combined_df = pd.concat([db_df, new_data], ignore_index=True)
-            combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         else:
             combined_df = db_df
-        
-        # Final safety filter
+
+        # Cleanup: Deduplicate and filter by date
+        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # 4. Save Database
+        # Topic Labeling Fix: Create a noise-free text column
+        print("🧹 Cleaning text for better topic labels...")
+        combined_df['text_for_embedding'] = combined_df['text_for_embedding'].apply(clean_for_labeling)
+
+        # Save
         combined_df.to_parquet(DB_PATH)
-        print(f"Final database size: {len(combined_df)}.")
+        print(f"💾 Database updated. Total papers: {len(combined_df)}")
         
-        # 5. Build Map
+        # 3. Build Map
+        print("🧠 Creating Vector Map...")
         subprocess.run([
             "embedding-atlas", DB_PATH,
             "--text", "text_for_embedding",
@@ -132,9 +140,10 @@ if __name__ == "__main__":
             "--export-application", "site.zip"
         ], check=True)
         
+        # Unzip for deployment
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
     else:
-        print("No papers found in timeframe.")
+        print("📭 No papers found.")
 
-    print("✨ Prefill complete!")
+    print("✨ Process Complete!")
