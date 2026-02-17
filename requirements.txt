@@ -2,4 +2,5 @@ arxiv
 pandas
 pyarrow
 sentence-transformers
+pyyaml
 embedding-atlas
