@@ -47,9 +47,14 @@ if __name__ == "__main__":
     # Create docs folder and unzip
     os.makedirs("docs", exist_ok=True)
     os.system("unzip -o site.zip -d docs/")
-    
+
+    # FIX: Tell GitHub not to use Jekyll
+    with open("docs/.nojekyll", "w") as f:
+        f.write("")
+        
     # NEW: Create a small JSON file for the 'Last Updated' badge on the README
     with open("docs/status.json", "w") as f:
         f.write(f'{{"last_update": "{datetime.now().strftime("%Y-%m-%d")}"}}')
         
     print("✅ Success! Map updated.")
+
