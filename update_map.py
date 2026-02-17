@@ -30,7 +30,6 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
-# --- 2. UTILITIES ---
 def fetch_results_with_retry(client, search, max_retries=5):
     for i in range(max_retries):
         try:
@@ -38,14 +37,12 @@ def fetch_results_with_retry(client, search, max_retries=5):
         except Exception as e:
             if "429" in str(e):
                 wait = (i + 1) * 30
-                print(f"⚠️ Rate limited. Retrying in {wait}s...")
                 time.sleep(wait)
             else: raise e
     raise Exception("Max retries exceeded")
 
 def generate_tldrs_local(df):
     if df.empty: return []
-    print(f"🤖 AI Summarizing {len(df)} new papers...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -60,17 +57,12 @@ def generate_tldrs_local(df):
 
 def judge_significance(row):
     score = 0
-    full_text = f"{row['title']} {row['summary_text']}".lower() # Updated column name ref
+    full_text = f"{row['title']} {row['text']}".lower() 
     if INSTITUTION_PATTERN.search(full_text): score += 2
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']): score += 1
     return "High Priority" if score >= 2 else "Standard"
 
-def light_clean(text):
-    noise = r'\b(model|paper|approach|using|based|towards|proposed|method|study)\b'
-    cleaned = re.sub(noise, '', text, flags=re.IGNORECASE)
-    return ' '.join(cleaned.split())
-
-# --- 3. MAIN EXECUTION ---
+# --- MAIN EXECUTION ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
@@ -92,7 +84,7 @@ if __name__ == "__main__":
         all_fetched = pd.DataFrame([{
             "id": r.entry_id.split('/')[-1],
             "title": r.title,
-            "summary_text": f"{r.title}. {r.summary}", # Original rich text
+            "text": f"{r.title}. {r.summary}", # Standard name for main content
             "url": r.pdf_url,
             "date": r.published.strftime("%Y-%m-%d")
         } for r in results])
@@ -112,18 +104,16 @@ if __name__ == "__main__":
         combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # TRICK: Use 'text' for the clean labels (overlays)
-        # Use 'summary_text' for the actual embedding (semantic position)
-        combined_df['text'] = combined_df['title'].apply(light_clean)
+        # We use 'label' which is a reserved keyword in most mapping engines
+        combined_df['label'] = combined_df['title']
 
         combined_df.to_parquet(DB_PATH)
         
         print("🧠 Creating Vector Map...")
-        # We use 'summary_text' to position the dots, 
-        # but Atlas will use 'text' for the labels by default.
+        # Simplest possible command. Let the engine auto-detect 'text' and 'label'
         subprocess.run([
             "embedding-atlas", DB_PATH,
-            "--text", "summary_text",
+            "--text", "text",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
