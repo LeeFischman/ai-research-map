@@ -5,10 +5,11 @@ import os
 import gc
 import torch
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from transformers import pipeline
 
-# --- 1. CONFIGURATION: THE 95 ELITE INSTITUTIONS ---
+# --- 1. CONFIGURATION ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
     "Cornell", "UWashington", "UMich", "Georgia Tech", "UT Austin", "UIUC", "NYU", 
@@ -27,97 +28,76 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
-# --- 2. AI SUMMARIZATION LOGIC ---
+# --- 2. RETRY LOGIC FOR ARXIV ---
+def fetch_results_with_retry(client, search, max_retries=5):
+    for i in range(max_retries):
+        try:
+            return list(client.results(search))
+        except Exception as e:
+            if "429" in str(e):
+                wait = (i + 1) * 30  # Wait 30, 60, 90... seconds
+                print(f"⚠️ Rate limited (429). Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise e
+    raise Exception("Max retries exceeded for arXiv API")
+
+# --- 3. AI SUMMARIZATION ---
 def generate_tldrs_local(df):
-    if df.empty:
-        return []
-    
+    if df.empty: return []
     print("🤖 Loading LaMini-Flan-T5-248M...")
-    summarizer = pipeline(
-        "text-generation", 
-        model="MBZUAI/LaMini-Flan-T5-248M", 
-        device=-1, 
-        torch_dtype=torch.float32
-    )
+    summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     
     tldrs = []
-    print(f"✍️ Summarizing {len(df)} papers...")
-    
     for i, row in df.iterrows():
         prompt = f"Summarize this research in one short sentence: {row['title']}. {row['text_for_embedding'][:500]}"
         try:
-            # Removed max_length to favor max_new_tokens, stopping the log warnings
             res = summarizer(prompt, max_new_tokens=50, do_sample=False, truncation=True)
             output = res[0]['generated_text']
-            if prompt in output:
-                output = output.replace(prompt, "").strip()
-            # Clean up any leftover prompt artifacts
-            output = output.split("Summarize this")[-1].strip()
-            tldrs.append(output)
-        except Exception as e:
-            tldrs.append("Summary currently unavailable.")
-            
-        if (i + 1) % 10 == 0:
-            print(f"✅ Processed {i+1}/{len(df)} papers...")
-
+            if prompt in output: output = output.replace(prompt, "").strip()
+            tldrs.append(output.split("Summarize this")[-1].strip())
+        except:
+            tldrs.append("Summary unavailable.")
+        if (i + 1) % 10 == 0: print(f"✅ Processed {i+1}/{len(df)}...")
+    
     del summarizer
     gc.collect()
     return tldrs
 
-# --- 3. SIGNIFICANCE SCORING LOGIC ---
+# --- 4. SCORING ---
 def judge_significance(row):
     score = 0
     full_text = f"{row['title']} {row['text_for_embedding']}".lower()
-    
-    if INSTITUTION_PATTERN.search(full_text):
-        score += 2
-        
-    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms', 'breakthrough']):
-        score += 1
-        
+    if INSTITUTION_PATTERN.search(full_text): score += 2
+    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'breakthrough']): score += 1
     return "Significant" if score >= 2 else "Standard"
 
-# --- 4. MAIN EXECUTION ---
+# --- 5. MAIN ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    print(f"📅 Build Date: {now.strftime('%Y-%m-%d %H:%M')} UTC")
-
-    client = arxiv.Client()
+    client = arxiv.Client(page_size=100, delay_seconds=3, num_retries=5)
+    
     yesterday = now - timedelta(days=1)
+    date_query = f"submittedDate:[{yesterday.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
     
-    date_from = yesterday.strftime('%Y%m%d%H%M')
-    date_to = now.strftime('%Y%m%d%H%M')
-    date_query = f"submittedDate:[{date_from} TO {date_to}]"
+    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=100, sort_by=arxiv.SortCriterion.SubmittedDate)
     
-    print(f"🔍 Querying: cat:cs.AI AND {date_query}")
-    search = arxiv.Search(
-        query=f"cat:cs.AI AND {date_query}",
-        max_results=150,
-        sort_by=arxiv.SortCriterion.SubmittedDate
-    )
+    results = fetch_results_with_retry(client, search)
     
-    results = list(client.results(search))
     if not results:
-        print("📭 No new papers found today.")
-        os.makedirs("docs", exist_ok=True)
-        with open("docs/index.html", "w") as f: f.write("<h1>No new papers today.</h1>")
+        print("📭 No new papers.")
     else:
-        data = []
-        for r in results:
-            data.append({
-                "title": r.title,
-                "text_for_embedding": f"{r.title}. {r.summary}",
-                "url": r.pdf_url,
-                "date": r.published.strftime("%Y-%m-%d")
-            })
+        df = pd.DataFrame([{
+            "title": r.title,
+            "text_for_embedding": f"{r.title}. {r.summary}",
+            "url": r.pdf_url,
+            "date": r.published.strftime("%Y-%m-%d")
+        } for r in results])
         
-        df = pd.DataFrame(data)
         df['tldr'] = generate_tldrs_local(df)
         df['status'] = df.apply(judge_significance, axis=1)
         df.to_parquet("papers.parquet")
         
-        print("🧠 Creating Vector Map...")
-        # Fixed the flag from --color-by to --color as per CLI version 0.17.0
         subprocess.run([
             "embedding-atlas", "papers.parquet",
             "--text", "text_for_embedding",
@@ -127,7 +107,5 @@ if __name__ == "__main__":
         ], check=True)
         
         os.makedirs("docs", exist_ok=True)
-        os.system("unzip -o site.zip -d docs/")
-        with open("docs/.nojekyll", "w") as f: f.write("")
-
-    print("✨ Map update completed successfully!")
+        os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
+    print("✨ Done!")
