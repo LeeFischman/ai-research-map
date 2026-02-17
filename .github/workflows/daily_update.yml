@@ -5,9 +5,6 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,22 +16,22 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          update-environment: true # Forces the runner to prioritize this version
           cache: 'pip'
 
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
+      # IMPORTANT: This saves the 1GB AI model so it doesn't download every day
+      - name: Cache AI Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-models
 
-      - name: Run Map Update
-        run: python update_map.py
+      - name: Install & Run
+        run: |
+          pip install -r requirements.txt
+          python update_map.py
 
-      # NEW: Deploy only the 'docs' folder to the 'gh-pages' branch
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: docs
-          branch: gh-pages # This creates a clean branch just for the website
-
-
-
-
+          branch: gh-pages
