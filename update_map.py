@@ -43,6 +43,7 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
+    print(f"🤖 Processing {len(df)} papers...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -51,6 +52,7 @@ def generate_tldrs_local(df):
             res = summarizer(prompt, max_new_tokens=30, do_sample=False)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
+        if (i + 1) % 10 == 0: print(f"✅ AI Processed {i+1}/{len(df)}...")
     del summarizer
     gc.collect()
     return tldrs
@@ -65,50 +67,62 @@ def judge_significance(row):
 # --- MAIN LOGIC ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    cutoff_date = (now - timedelta(days=4)).strftime('%Y-%m-%d')
+    # Filter database for the last 5 days
+    cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
     # 1. Load existing database
     if os.path.exists(DB_PATH):
         db_df = pd.read_parquet(DB_PATH)
-        # Keep only last 4 days
         db_df = db_df[db_df['date'] >= cutoff_date]
-        print(f"Loaded existing database. Rows after filtering: {len(db_df)}")
+        print(f"Loaded existing database: {len(db_df)} rows.")
     else:
         db_df = pd.DataFrame()
-        print("No database found. Creating fresh.")
+        print("No database found. Initializing.")
 
-    # 2. Fetch today's papers
+    # 2. Fetch papers from the last 5 days
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
-    yesterday = now - timedelta(days=1)
-    date_query = f"submittedDate:[{yesterday.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
-    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=100)
+    # We look back 5 days instead of 1 for the prefill
+    start_time = now - timedelta(days=5)
+    date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
+    
+    print(f"🔍 Fetching prefill papers: {date_query}")
+    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=200)
     
     results = fetch_results_with_retry(client, search)
     
     if results:
-        new_data = pd.DataFrame([{
-            "id": r.entry_id.split('/')[-1], # Unique ID for deduplication
+        all_fetched = pd.DataFrame([{
+            "id": r.entry_id.split('/')[-1],
             "title": r.title,
             "text_for_embedding": f"{r.title}. {r.summary}",
             "url": r.pdf_url,
             "date": r.published.strftime("%Y-%m-%d")
         } for r in results])
 
-        # Generate TLDR and Priority only for NEW papers to save time/compute
-        new_data['tldr'] = generate_tldrs_local(new_data)
-        new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
+        # Find papers that aren't in our DB yet
+        if not db_df.empty:
+            new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])]
+        else:
+            new_data = all_fetched
 
-        # 3. Merge and Overwrite (Deduplicate by 'id')
-        combined_df = pd.concat([db_df, new_data], ignore_index=True)
-        # Keep the last occurrence (the newest version) of any paper ID
-        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
+        print(f"Found {len(new_data)} papers needing AI processing.")
+
+        if not new_data.empty:
+            new_data['tldr'] = generate_tldrs_local(new_data)
+            new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
+
+            # 3. Merge
+            combined_df = pd.concat([db_df, new_data], ignore_index=True)
+            combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
+        else:
+            combined_df = db_df
         
-        # Final filter to ensure rolling window
+        # Final safety filter
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
         # 4. Save Database
         combined_df.to_parquet(DB_PATH)
-        print(f"Database saved with {len(combined_df)} total papers.")
+        print(f"Final database size: {len(combined_df)}.")
         
         # 5. Build Map
         subprocess.run([
@@ -121,6 +135,6 @@ if __name__ == "__main__":
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
     else:
-        print("No new papers today.")
+        print("No papers found in timeframe.")
 
-    print("✨ Done!")
+    print("✨ Prefill complete!")
