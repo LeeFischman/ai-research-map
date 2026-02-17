@@ -1,37 +1,53 @@
-name: Daily arXiv Map Update
+name: Update AI Research Map
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    # Runs at 14:00 UTC every day
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allows you to run it manually for testing
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repo
+      - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          # Fetches the latest database.parquet from the repo
+          fetch-depth: 1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/checkout@v4
         with:
-          python-version: "3.12"
-          cache: 'pip'
+          python-version: '3.12'
 
-      # IMPORTANT: This saves the 1GB AI model so it doesn't download every day
-      - name: Cache AI Models
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: ${{ runner.os }}-hf-models
-
-      - name: Install & Run
+      - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
-          python update_map.py
+          python -m pip install --upgrade pip
+          pip install arxiv pandas pyarrow sentence-transformers embedding-atlas transformers torch
+
+      - name: Run Update Script
+        run: python update_map.py
+
+      - name: Commit and Push Database Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # Check if database.parquet was modified or created
+          if git status --porcelain | grep -q "database.parquet"; then
+            git add database.parquet
+            git commit -m "Update rolling database: $(date -u +'%Y-%m-%d')"
+            git push
+          else
+            echo "No changes to database.parquet"
+          fi
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: docs
-          branch: gh-pages
+          folder: docs # The folder where site.zip was unzipped
+          branch: gh-pages # Deploys the map to this branch
