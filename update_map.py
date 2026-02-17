@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from transformers import pipeline
 
 DB_PATH = "database.parquet"
-# Ensure the docs directory exists immediately to prevent deployment errors
 os.makedirs("docs", exist_ok=True)
 
 # --- 1. CONFIGURATION ---
@@ -44,7 +43,9 @@ def calculate_reputation(row):
         score += 2
     rigor_keys = ['benchmark', 'sota', 'outperforms', 'state-of-the-art', 'comprehensive', 'ablation']
     if any(k in full_text for k in rigor_keys): score += 1
-    return "Reputation+" if score >= 4 else "Standard"
+    
+    # Updated labels
+    return "Reputation Enhanced" if score >= 4 else "Reputation Std."
 
 # --- 3. UTILITIES ---
 def fetch_results_with_retry(client, search, max_retries=5):
@@ -57,7 +58,6 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
-    print(f"🤖 Summarizing {len(df)} new papers...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -129,17 +129,28 @@ if __name__ == "__main__":
     
     if os.path.exists(DB_PATH):
         db_df = pd.read_parquet(DB_PATH)
+        
+        # --- MIGRATION BLOCK: Fix existing data ---
+        if 'Paper_Priority' in db_df.columns:
+            print("🔄 Migrating 'Paper_Priority' to 'Reputation'...")
+            db_df = db_df.rename(columns={'Paper_Priority': 'Reputation'})
+        
+        if 'Reputation' in db_df.columns:
+            db_df['Reputation'] = db_df['Reputation'].replace({
+                'Standard': 'Reputation Std.',
+                'High Priority': 'Reputation Enhanced'
+            })
+        
         db_df = db_df[db_df['date'] >= cutoff_date]
-    else: db_df = pd.DataFrame()
+    else:
+        db_df = pd.DataFrame()
 
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     start_time = now - timedelta(days=5)
     date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
-    
     search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=250)
     results = fetch_results_with_retry(client, search)
     
-    # Check if we have data to process
     if results or not db_df.empty:
         if results:
             all_fetched = pd.DataFrame([{
@@ -153,13 +164,15 @@ if __name__ == "__main__":
 
             if not db_df.empty:
                 new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
-            else: new_data = all_fetched.copy()
+            else:
+                new_data = all_fetched.copy()
 
             if not new_data.empty:
                 new_data['tldr'] = generate_tldrs_local(new_data)
                 new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
                 combined_df = pd.concat([db_df, new_data], ignore_index=True)
-            else: combined_df = db_df
+            else:
+                combined_df = db_df
         else:
             combined_df = db_df
 
@@ -170,13 +183,11 @@ if __name__ == "__main__":
         
         print("🧠 Building Atlas Map...")
         subprocess.run(["embedding-atlas", DB_PATH, "--text", "text", "--model", "allenai/specter2_base", "--export-application", "site.zip"], check=True)
-        
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         inject_custom_ui("docs")
     else:
-        # Fallback if everything is empty to prevent deployment failure
-        print("⚠️ No data available. Creating placeholder for deployment.")
+        print("⚠️ No data.")
         with open("docs/index.html", "w") as f:
-            f.write("<html><body>No papers found in the last 5 days. Check back soon!</body></html>")
+            f.write("<html><body>No papers found.</body></html>")
 
     print("✨ Sync Complete!")
