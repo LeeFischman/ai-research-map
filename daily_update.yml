@@ -2,11 +2,11 @@ name: Daily arXiv Map Update
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Midnight daily
-  workflow_dispatch: # Allows manual trigger
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write # Needed to push the updated map to your repo
+  contents: write
 
 jobs:
   build:
@@ -27,8 +27,9 @@ jobs:
       - name: Run Map Update
         run: python update_map.py
 
-      - name: Commit and Push Changes
-        uses: stefanzweifel/git-auto-commit-action@v5
+      # NEW: Deploy only the 'docs' folder to the 'gh-pages' branch
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          commit_message: "🤖 Auto-update arXiv map"
-          branch: main
+          folder: docs
+          branch: gh-pages # This creates a clean branch just for the website
