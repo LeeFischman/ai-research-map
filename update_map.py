@@ -33,7 +33,6 @@ def generate_tldrs_local(df):
         return []
     
     print("🤖 Loading LaMini-Flan-T5-248M...")
-    # Switched to 'text-generation' as per the available tasks in your log
     summarizer = pipeline(
         "text-generation", 
         model="MBZUAI/LaMini-Flan-T5-248M", 
@@ -47,12 +46,13 @@ def generate_tldrs_local(df):
     for i, row in df.iterrows():
         prompt = f"Summarize this research in one short sentence: {row['title']}. {row['text_for_embedding'][:500]}"
         try:
-            # Added truncation=True to handle long input strings
-            res = summarizer(prompt, max_length=60, min_length=10, do_sample=False, truncation=True)
-            # The output for text-generation often includes the prompt; we strip it if necessary
+            # Removed max_length to favor max_new_tokens, stopping the log warnings
+            res = summarizer(prompt, max_new_tokens=50, do_sample=False, truncation=True)
             output = res[0]['generated_text']
             if prompt in output:
                 output = output.replace(prompt, "").strip()
+            # Clean up any leftover prompt artifacts
+            output = output.split("Summarize this")[-1].strip()
             tldrs.append(output)
         except Exception as e:
             tldrs.append("Summary currently unavailable.")
@@ -75,7 +75,7 @@ def judge_significance(row):
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms', 'breakthrough']):
         score += 1
         
-    return "Significant (Red)" if score >= 2 else "Standard"
+    return "Significant" if score >= 2 else "Standard"
 
 # --- 4. MAIN EXECUTION ---
 if __name__ == "__main__":
@@ -117,10 +117,11 @@ if __name__ == "__main__":
         df.to_parquet("papers.parquet")
         
         print("🧠 Creating Vector Map...")
+        # Fixed the flag from --color-by to --color as per CLI version 0.17.0
         subprocess.run([
             "embedding-atlas", "papers.parquet",
             "--text", "text_for_embedding",
-            "--color-by", "status",
+            "--color", "status",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
