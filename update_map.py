@@ -51,7 +51,6 @@ def generate_tldrs_local(df):
     for i, row in df.iterrows():
         prompt = f"Summarize: {row['title']}"
         try:
-            # Setting max_length=None to let max_new_tokens rule and stop the warning
             res = summarizer(prompt, max_new_tokens=30, do_sample=False, max_length=None)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
@@ -61,7 +60,7 @@ def generate_tldrs_local(df):
 
 def judge_significance(row):
     score = 0
-    full_text = f"{row['title']} {row['text_for_embedding']}".lower()
+    full_text = f"{row['title']} {row['summary_text']}".lower() # Updated column name ref
     if INSTITUTION_PATTERN.search(full_text): score += 2
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']): score += 1
     return "High Priority" if score >= 2 else "Standard"
@@ -93,7 +92,7 @@ if __name__ == "__main__":
         all_fetched = pd.DataFrame([{
             "id": r.entry_id.split('/')[-1],
             "title": r.title,
-            "text_for_embedding": f"{r.title}. {r.summary}",
+            "summary_text": f"{r.title}. {r.summary}", # Original rich text
             "url": r.pdf_url,
             "date": r.published.strftime("%Y-%m-%d")
         } for r in results])
@@ -113,17 +112,18 @@ if __name__ == "__main__":
         combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # Pointing labels to title-based content
-        combined_df['label_content'] = combined_df['title'].apply(light_clean)
+        # TRICK: Use 'text' for the clean labels (overlays)
+        # Use 'summary_text' for the actual embedding (semantic position)
+        combined_df['text'] = combined_df['title'].apply(light_clean)
 
         combined_df.to_parquet(DB_PATH)
         
         print("🧠 Creating Vector Map...")
-        # Fixed flag: --labels
+        # We use 'summary_text' to position the dots, 
+        # but Atlas will use 'text' for the labels by default.
         subprocess.run([
             "embedding-atlas", DB_PATH,
-            "--text", "text_for_embedding",
-            "--labels", "label_content",
+            "--text", "summary_text",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
