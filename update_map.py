@@ -35,9 +35,14 @@ def calculate_reputation(row):
     score = 0
     full_text = f"{row['title']} {row['text']}".lower()
     if INSTITUTION_PATTERN.search(full_text): score += 3
-    num_authors = len(row.get('authors', []))
+    
+    # Author count safe check
+    authors = row.get('authors')
+    num_authors = len(authors) if isinstance(authors, list) else 0
+    
     if num_authors >= 8: score += 2
     elif num_authors >= 4: score += 1
+    
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'open-source', 'code available']):
         score += 2
     rigor_keys = ['benchmark', 'sota', 'outperforms', 'state-of-the-art', 'comprehensive', 'ablation']
@@ -54,7 +59,6 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
-    # Set max_length to None and let max_new_tokens handle it
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -123,59 +127,64 @@ if __name__ == "__main__":
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
+    # 1. LOAD AND CLEAN EXISTING DB
     db_df = pd.DataFrame()
     if os.path.exists(DB_PATH):
         try:
-            db_df = pd.read_parquet(DB_PATH)
-            # FORCE UNIQUE INDEX ON LOAD
-            db_df = db_df.reset_index(drop=True)
+            db_df = pd.read_parquet(DB_PATH).copy()
+            # Drop any duplicate indices and reset
+            db_df = db_df.loc[~db_df.index.duplicated(keep='first')].reset_index(drop=True)
             
-            # Migration logic
             if 'Paper_Priority' in db_df.columns:
                 db_df = db_df.rename(columns={'Paper_Priority': 'Reputation'})
             if 'Reputation' in db_df.columns:
-                db_df['Reputation'] = db_df['Reputation'].replace({
-                    'Standard': 'Reputation Std.',
-                    'High Priority': 'Reputation Enhanced'
-                })
+                db_df['Reputation'] = db_df['Reputation'].replace({'Standard': 'Reputation Std.', 'High Priority': 'Reputation Enhanced'})
+            
             db_df = db_df[db_df['date'] >= cutoff_date].reset_index(drop=True)
         except Exception as e:
-            print(f"⚠️ Database load error, starting fresh: {e}")
+            print(f"⚠️ Resetting DB due to error: {e}")
             db_df = pd.DataFrame()
 
+    # 2. FETCH NEW DATA
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     start_time = now - timedelta(days=5)
     date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
     search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=250)
     results = fetch_results_with_retry(client, search)
     
-    if results or not db_df.empty:
-        if results:
-            new_data = pd.DataFrame([{
-                "id": r.entry_id.split('/')[-1],
-                "title": r.title,
-                "text": f"{r.title}. {r.summary}",
-                "url": r.pdf_url,
-                "date": r.published.strftime("%Y-%m-%d"),
-                "authors": [a.name for a in r.authors]
-            } for r in results])
+    # 3. PROCESS NEW DATA
+    if results:
+        new_data = pd.DataFrame([{
+            "id": r.entry_id.split('/')[-1],
+            "title": r.title,
+            "text": f"{r.title}. {r.summary}",
+            "url": r.pdf_url,
+            "date": r.published.strftime("%Y-%m-%d"),
+            "authors": [a.name for a in r.authors]
+        } for r in results])
+        
+        new_data = new_data.reset_index(drop=True)
+
+        if not db_df.empty:
+            new_data = new_data[~new_data['id'].isin(db_df['id'])].copy()
+
+        if not new_data.empty:
+            new_data['tldr'] = generate_tldrs_local(new_data)
+            new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
             
-            # Force unique index for new data too
-            new_data = new_data.reset_index(drop=True)
-
-            if not db_df.empty:
-                new_data = new_data[~new_data['id'].isin(db_df['id'])].copy()
-
-            if not new_data.empty:
-                new_data['tldr'] = generate_tldrs_local(new_data)
-                new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
-                # CONCAT WITH CLEAN INDICES
-                combined_df = pd.concat([db_df, new_data], axis=0, ignore_index=True)
-            else:
-                combined_df = db_df
+            # ENSURE COLUMN MATCHING BEFORE CONCAT
+            all_cols = list(set(db_df.columns) | set(new_data.columns))
+            db_df = db_df.reindex(columns=all_cols)
+            new_data = new_data.reindex(columns=all_cols)
+            
+            combined_df = pd.concat([db_df, new_data], axis=0, ignore_index=True)
         else:
             combined_df = db_df
+    else:
+        combined_df = db_df
 
+    # 4. FINAL CLEANUP AND EXPORT
+    if not combined_df.empty:
         combined_df = combined_df.drop_duplicates(subset=['id'], keep='last').reset_index(drop=True)
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         combined_df['label'] = combined_df['title']
