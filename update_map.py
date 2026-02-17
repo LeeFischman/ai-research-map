@@ -65,9 +65,9 @@ def judge_significance(row):
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']): score += 1
     return "High Priority" if score >= 2 else "Standard"
 
-def clean_for_labeling(text):
-    """Removes generic words to help the topic engine find specific research niches."""
-    noise = r'\b(model|models|paper|approach|method|algorithm|results|performance|proposed|based|using|data|task|learning|training|framework|system|study)\b'
+def light_clean(text):
+    """Removes only the most generic noise words to prevent blank labels."""
+    noise = r'\b(model|paper|approach|using|based|towards|proposed|method|study)\b'
     cleaned = re.sub(noise, '', text, flags=re.IGNORECASE)
     return ' '.join(cleaned.split())
 
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         db_df = pd.DataFrame()
         print("🆕 No database found. Initializing.")
 
-    # 2. Fetch papers (Looking back 5 days for catch-up/prefill)
+    # 2. Fetch papers
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     start_time = now - timedelta(days=5)
     date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
@@ -103,29 +103,25 @@ if __name__ == "__main__":
             "date": r.published.strftime("%Y-%m-%d")
         } for r in results])
 
-        # Find truly new papers
         if not db_df.empty:
             new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
         else:
             new_data = all_fetched.copy()
 
         if not new_data.empty:
-            print(f"✍️ Generating TLDRs for {len(new_data)} new papers...")
             new_data['tldr'] = generate_tldrs_local(new_data)
             new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
-            
-            # Merge
             combined_df = pd.concat([db_df, new_data], ignore_index=True)
         else:
             combined_df = db_df
 
-        # Cleanup: Deduplicate and filter by date
+        # Cleanup and Filter
         combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # Topic Labeling Fix: Create a noise-free text column
-        print("🧹 Cleaning text for better topic labels...")
-        combined_df['text_for_embedding'] = combined_df['text_for_embedding'].apply(clean_for_labeling)
+        # Strategy: Use Titles for Labels as they are more semantic than abstracts
+        print("🧹 Creating semantic labels from titles...")
+        combined_df['label'] = combined_df['title'].apply(light_clean)
 
         # Save
         combined_df.to_parquet(DB_PATH)
@@ -133,14 +129,15 @@ if __name__ == "__main__":
         
         # 3. Build Map
         print("🧠 Creating Vector Map...")
+        # Pointing labels to the new 'label' column while embedding the full text
         subprocess.run([
             "embedding-atlas", DB_PATH,
             "--text", "text_for_embedding",
+            "--label", "label",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
         
-        # Unzip for deployment
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
     else:
