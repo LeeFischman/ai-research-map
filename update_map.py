@@ -60,14 +60,13 @@ def inject_custom_ui(docs_path):
     index_file = os.path.join(docs_path, "index.html")
     if not os.path.exists(index_file): return
     custom_style = "<style>#info-tab { position: fixed; top: 50%; left: -320px; width: 320px; transform: translateY(-50%); background: rgba(15, 23, 42, 0.95); border-right: 3px solid #3b82f6; color: #f8fafc; transition: all 0.4s; z-index: 9999; padding: 24px; border-radius: 0 12px 12px 0; font-family: sans-serif; } #info-tab.open { left: 0; } #info-toggle { position: absolute; right: -48px; top: 50%; width: 48px; height: 48px; background: #1e40af; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 0 12px 12px 0; }</style>"
-    tab_html = f"<div id='info-tab'><div id='info-toggle'>⚙️</div><h2>The AI Research Map</h2><p>Color by <b>'Reputation'</b> for lab-weighted scoring.</p><hr><p>By <a href='https://www.linkedin.com/in/lee-fischman/' style='color:#60a5fa'>Lee Fischman</a></p></div><script>document.getElementById('info-toggle').onclick=lambda:document.getElementById('info-tab').classList.toggle('open');</script>".replace("lambda:", "function(){") + "}"
+    tab_html = f"<div id='info-tab'><div id='info-toggle'>⚙️</div><h2>The AI Research Map</h2><p>Color by <b>'Reputation'</b> for lab-weighted scoring.</p><hr><p>By <a href='https://www.linkedin.com/in/lee-fischman/' style='color:#60a5fa'>Lee Fischman</a></p></div><script>document.getElementById('info-toggle').onclick=function(){{document.getElementById('info-tab').classList.toggle('open');}};</script>"
     with open(index_file, "r") as f: content = f.read()
     with open(index_file, "w") as f: f.write(content.replace("</head>", custom_style + "</head>").replace("</body>", tab_html + "</body>"))
 
 # --- 3. EXECUTION ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    cutoff = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
     # Fresh Fetch
     client = arxiv.Client(page_size=100, delay_seconds=5)
@@ -87,14 +86,22 @@ if __name__ == "__main__":
         df = df.drop_duplicates(subset='id').reset_index(drop=True)
         df['tldr'] = generate_tldrs_local(df)
         df['Reputation'] = df.apply(calculate_reputation, axis=1)
-        df['label'] = df['title']
+        df['label'] = df['title'] # Explicitly naming the label column
         
         df.to_parquet(DB_PATH, index=False)
         
-        print("🧠 Building Map...")
-        subprocess.run(["embedding-atlas", DB_PATH, "--text", "text", "--model", "allenai/specter2_base", "--export-application", "site.zip"], check=True)
+        print("🧠 Building Map with Explicit Labels...")
+        # ADDED --label "label" flag here
+        subprocess.run([
+            "embedding-atlas", DB_PATH, 
+            "--text", "text", 
+            "--label", "label", 
+            "--model", "allenai/specter2_base", 
+            "--export-application", "site.zip"
+        ], check=True)
+        
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         inject_custom_ui("docs")
-        print("✨ Fresh Start Complete!")
+        print("✨ Label Fix Complete!")
     else:
-        print("No papers found in the window.")
+        print("No papers found.")
