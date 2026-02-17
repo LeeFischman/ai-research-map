@@ -11,7 +11,7 @@ from transformers import pipeline
 
 DB_PATH = "database.parquet"
 
-# --- 1. CONFIGURATION: ELITE INSTITUTIONS ---
+# --- 1. CONFIGURATION ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
     "Cornell", "UWashington", "UMich", "Georgia Tech", "UT Austin", "UIUC", "NYU", 
@@ -51,7 +51,8 @@ def generate_tldrs_local(df):
     for i, row in df.iterrows():
         prompt = f"Summarize: {row['title']}"
         try:
-            res = summarizer(prompt, max_new_tokens=30, do_sample=False)
+            # Setting max_length=None to let max_new_tokens rule and stop the warning
+            res = summarizer(prompt, max_new_tokens=30, do_sample=False, max_length=None)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
     del summarizer
@@ -66,7 +67,6 @@ def judge_significance(row):
     return "High Priority" if score >= 2 else "Standard"
 
 def light_clean(text):
-    """Removes only the most generic noise words to prevent blank labels."""
     noise = r'\b(model|paper|approach|using|based|towards|proposed|method|study)\b'
     cleaned = re.sub(noise, '', text, flags=re.IGNORECASE)
     return ' '.join(cleaned.split())
@@ -76,21 +76,16 @@ if __name__ == "__main__":
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
-    # 1. Load existing database
     if os.path.exists(DB_PATH):
         db_df = pd.read_parquet(DB_PATH)
         db_df = db_df[db_df['date'] >= cutoff_date]
-        print(f"✅ Loaded database: {len(db_df)} existing records.")
     else:
         db_df = pd.DataFrame()
-        print("🆕 No database found. Initializing.")
 
-    # 2. Fetch papers
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     start_time = now - timedelta(days=5)
     date_query = f"submittedDate:[{start_time.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
     
-    print(f"🔍 Fetching papers from: {date_query}")
     search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=250)
     results = fetch_results_with_retry(client, search)
     
@@ -115,32 +110,24 @@ if __name__ == "__main__":
         else:
             combined_df = db_df
 
-        # Cleanup and Filter
         combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # Strategy: Use Titles for Labels as they are more semantic than abstracts
-        print("🧹 Creating semantic labels from titles...")
-        combined_df['label'] = combined_df['title'].apply(light_clean)
+        # Pointing labels to title-based content
+        combined_df['label_content'] = combined_df['title'].apply(light_clean)
 
-        # Save
         combined_df.to_parquet(DB_PATH)
-        print(f"💾 Database updated. Total papers: {len(combined_df)}")
         
-        # 3. Build Map
         print("🧠 Creating Vector Map...")
-        # Pointing labels to the new 'label' column while embedding the full text
+        # Fixed flag: --labels
         subprocess.run([
             "embedding-atlas", DB_PATH,
             "--text", "text_for_embedding",
-            "--label", "label",
+            "--labels", "label_content",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
         
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
-    else:
-        print("📭 No papers found.")
-
     print("✨ Process Complete!")
