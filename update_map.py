@@ -10,8 +10,10 @@ from datetime import datetime, timedelta, timezone
 from transformers import pipeline
 
 DB_PATH = "database.parquet"
+# Ensure the docs directory exists immediately to prevent deployment errors
+os.makedirs("docs", exist_ok=True)
 
-# --- 1. CONFIGURATION: TOP LABS & INSTITUTIONS ---
+# --- 1. CONFIGURATION ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
     "Cornell", "UWashington", "UMich", "Georgia Tech", "UT Austin", "UIUC", "NYU", 
@@ -30,31 +32,18 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
-# --- 2. REFINED REPUTATION SCORING ---
+# --- 2. REPUTATION LOGIC ---
 def calculate_reputation(row):
     score = 0
     full_text = f"{row['title']} {row['text']}".lower()
-    
-    # A. Institution Bonus (+3)
-    if INSTITUTION_PATTERN.search(full_text): 
-        score += 3
-    
-    # B. Author Count Bonus (+1 or +2)
-    # Extracting from the 'authors' list we store during fetch
+    if INSTITUTION_PATTERN.search(full_text): score += 3
     num_authors = len(row.get('authors', []))
     if num_authors >= 8: score += 2
     elif num_authors >= 4: score += 1
-    
-    # C. Practicality/Code Signal (+2)
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'open-source', 'code available']):
         score += 2
-        
-    # D. Rigor Keywords (+1)
     rigor_keys = ['benchmark', 'sota', 'outperforms', 'state-of-the-art', 'comprehensive', 'ablation']
-    if any(k in full_text for k in rigor_keys):
-        score += 1
-
-    # Threshold for "Reputation+" vs "Standard"
+    if any(k in full_text for k in rigor_keys): score += 1
     return "Reputation+" if score >= 4 else "Standard"
 
 # --- 3. UTILITIES ---
@@ -81,11 +70,10 @@ def generate_tldrs_local(df):
     gc.collect()
     return tldrs
 
-# --- 4. UI INJECTION (LEFT-CENTERED DARK MODE) ---
+# --- 4. UI INJECTION ---
 def inject_custom_ui(docs_path):
     index_file = os.path.join(docs_path, "index.html")
     if not os.path.exists(index_file): return
-    
     custom_style = """
     <style>
         #info-tab {
@@ -110,7 +98,6 @@ def inject_custom_ui(docs_path):
         .tip { background: rgba(59, 130, 246, 0.1); border-left: 2px solid #3b82f6; padding: 10px; font-style: italic; border-radius: 0 4px 4px 0; }
     </style>
     """
-    
     tab_html = """
     <div id="info-tab">
         <div id="info-toggle">⚙️</div>
@@ -130,7 +117,6 @@ def inject_custom_ui(docs_path):
         };
     </script>
     """
-
     with open(index_file, "r") as f: content = f.read()
     if "</head>" in content: content = content.replace("</head>", custom_style + "</head>")
     if "</body>" in content: content = content.replace("</body>", tab_html + "</body>")
@@ -153,22 +139,44 @@ if __name__ == "__main__":
     search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=250)
     results = fetch_results_with_retry(client, search)
     
-    if results:
-        all_fetched = pd.DataFrame([{
-            "id": r.entry_id.split('/')[-1],
-            "title": r.title,
-            "text": f"{r.title}. {r.summary}",
-            "url": r.pdf_url,
-            "date": r.published.strftime("%Y-%m-%d"),
-            "authors": [a.name for a in r.authors]
-        } for r in results])
+    # Check if we have data to process
+    if results or not db_df.empty:
+        if results:
+            all_fetched = pd.DataFrame([{
+                "id": r.entry_id.split('/')[-1],
+                "title": r.title,
+                "text": f"{r.title}. {r.summary}",
+                "url": r.pdf_url,
+                "date": r.published.strftime("%Y-%m-%d"),
+                "authors": [a.name for a in r.authors]
+            } for r in results])
 
-        if not db_df.empty:
-            new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
-        else: new_data = all_fetched.copy()
+            if not db_df.empty:
+                new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
+            else: new_data = all_fetched.copy()
 
-        if not new_data.empty:
-            new_data['tldr'] = generate_tldrs_local(new_data)
-            new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
-            combined_df = pd.concat([db_df, new_data], ignore_index=True)
-        else: combined
+            if not new_data.empty:
+                new_data['tldr'] = generate_tldrs_local(new_data)
+                new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
+                combined_df = pd.concat([db_df, new_data], ignore_index=True)
+            else: combined_df = db_df
+        else:
+            combined_df = db_df
+
+        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
+        combined_df = combined_df[combined_df['date'] >= cutoff_date]
+        combined_df['label'] = combined_df['title']
+        combined_df.to_parquet(DB_PATH)
+        
+        print("🧠 Building Atlas Map...")
+        subprocess.run(["embedding-atlas", DB_PATH, "--text", "text", "--model", "allenai/specter2_base", "--export-application", "site.zip"], check=True)
+        
+        os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
+        inject_custom_ui("docs")
+    else:
+        # Fallback if everything is empty to prevent deployment failure
+        print("⚠️ No data available. Creating placeholder for deployment.")
+        with open("docs/index.html", "w") as f:
+            f.write("<html><body>No papers found in the last 5 days. Check back soon!</body></html>")
+
+    print("✨ Sync Complete!")
