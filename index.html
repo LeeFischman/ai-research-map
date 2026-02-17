@@ -12,49 +12,8 @@
     </style>
     <script type="module" crossorigin src="./assets/index-BtGntx4N.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-Df_vtN7h.css">
-  
-    <style>
-        #info-tab {
-            position: fixed; top: 50%; left: -320px; width: 320px; transform: translateY(-50%);
-            background: rgba(15, 23, 42, 0.95); border-right: 3px solid #3b82f6;
-            backdrop-filter: blur(10px); color: #f8fafc;
-            box-shadow: 10px 0 30px rgba(0,0,0,0.5); transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            z-index: 9999; padding: 24px; border-radius: 0 12px 12px 0; font-family: 'Inter', system-ui, sans-serif;
-        }
-        #info-tab.open { left: 0; }
-        #info-toggle {
-            position: absolute; right: -48px; top: 50%; transform: translateY(-50%);
-            width: 48px; height: 48px; background: #1e40af; color: white; display: flex; 
-            align-items: center; justify-content: center; cursor: pointer; border-radius: 0 12px 12px 0;
-            font-size: 20px; box-shadow: 4px 0 10px rgba(0,0,0,0.2);
-        }
-        #info-tab h2 { margin: 0 0 4px 0; font-size: 18px; color: #60a5fa; font-weight: 700; }
-        #info-tab .author { font-size: 14px; margin-bottom: 20px; color: #94a3b8; }
-        #info-tab a { color: #3b82f6; text-decoration: none; font-weight: 500; }
-        #info-tab hr { border: 0; border-top: 1px solid #334155; margin: 16px 0; }
-        #info-tab p { font-size: 13px; line-height: 1.6; color: #cbd5e1; margin-bottom: 12px; }
-        .tip { background: rgba(59, 130, 246, 0.1); border-left: 2px solid #3b82f6; padding: 10px; font-style: italic; border-radius: 0 4px 4px 0; }
-    </style>
-    </head>
+  <style>#info-tab { position: fixed; top: 50%; left: -320px; width: 320px; transform: translateY(-50%); background: rgba(15, 23, 42, 0.95); border-right: 3px solid #3b82f6; color: #f8fafc; transition: all 0.4s; z-index: 9999; padding: 24px; border-radius: 0 12px 12px 0; font-family: sans-serif; } #info-tab.open { left: 0; } #info-toggle { position: absolute; right: -48px; top: 50%; width: 48px; height: 48px; background: #1e40af; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 0 12px 12px 0; }</style></head>
   <body>
     <div id="app" class="embedding-atlas-root"></div>
-  
-    <div id="info-tab">
-        <div id="info-toggle">⚙️</div>
-        <h2>The AI Research Map</h2>
-        <div class="author">by <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank">Lee Fischman</a></div>
-        <p>A 5-day view of <b>cs.AI</b> research clusters from arXiv.</p>
-        <p class="tip">💡 Color by <b>'Reputation'</b> to highlight papers from major labs, high author counts, and code releases.</p>
-        <hr>
-        <p>📚 <b>Books:</b> <a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank">Check out my books on Amazon</a></p>
-        <p>🛠️ <b>Technology:</b> <a href="https://apple.github.io/embedding-atlas/" target="_blank">Embedding Atlas</a></p>
-        <hr>
-        <div style="font-size: 11px; color: #94a3b8;">Last Sync: 2026-02-17 UTC</div>
-    </div>
-    <script>
-        document.getElementById('info-toggle').onclick = function() {
-            document.getElementById('info-tab').classList.toggle('open');
-        };
-    </script>
-    </body>
+  <div id='info-tab'><div id='info-toggle'>⚙️</div><h2>The AI Research Map</h2><p>Color by <b>'Reputation'</b> for lab-weighted scoring.</p><hr><p>By <a href='https://www.linkedin.com/in/lee-fischman/' style='color:#60a5fa'>Lee Fischman</a></p></div><script>document.getElementById('info-toggle').onclick=function(){document.getElementById('info-tab').classList.toggle('open');</script>}</body>
 </html>
