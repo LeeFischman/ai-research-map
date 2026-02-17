@@ -31,7 +31,6 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
-# --- 2. REPUTATION LOGIC ---
 def calculate_reputation(row):
     score = 0
     full_text = f"{row['title']} {row['text']}".lower()
@@ -43,11 +42,8 @@ def calculate_reputation(row):
         score += 2
     rigor_keys = ['benchmark', 'sota', 'outperforms', 'state-of-the-art', 'comprehensive', 'ablation']
     if any(k in full_text for k in rigor_keys): score += 1
-    
-    # Updated labels
     return "Reputation Enhanced" if score >= 4 else "Reputation Std."
 
-# --- 3. UTILITIES ---
 def fetch_results_with_retry(client, search, max_retries=5):
     for i in range(max_retries):
         try: return list(client.results(search))
@@ -58,19 +54,19 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
+    # Force max_length to None to stop the warning
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
         prompt = f"Summarize: {row['title']}"
         try:
-            res = summarizer(prompt, max_new_tokens=30, do_sample=False, max_length=None)
+            res = summarizer(prompt, max_new_tokens=30, do_sample=False, max_length=128)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
     del summarizer
     gc.collect()
     return tldrs
 
-# --- 4. UI INJECTION ---
 def inject_custom_ui(docs_path):
     index_file = os.path.join(docs_path, "index.html")
     if not os.path.exists(index_file): return
@@ -130,9 +126,10 @@ if __name__ == "__main__":
     if os.path.exists(DB_PATH):
         db_df = pd.read_parquet(DB_PATH)
         
-        # --- MIGRATION BLOCK: Fix existing data ---
+        # FIX: Reset index immediately to prevent InvalidIndexError
+        db_df = db_df.reset_index(drop=True)
+        
         if 'Paper_Priority' in db_df.columns:
-            print("🔄 Migrating 'Paper_Priority' to 'Reputation'...")
             db_df = db_df.rename(columns={'Paper_Priority': 'Reputation'})
         
         if 'Reputation' in db_df.columns:
@@ -163,6 +160,7 @@ if __name__ == "__main__":
             } for r in results])
 
             if not db_df.empty:
+                # FIX: Ensure unique IDs before merging
                 new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
             else:
                 new_data = all_fetched.copy()
@@ -170,13 +168,14 @@ if __name__ == "__main__":
             if not new_data.empty:
                 new_data['tldr'] = generate_tldrs_local(new_data)
                 new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
-                combined_df = pd.concat([db_df, new_data], ignore_index=True)
+                # FIX: reset_index ensures concat always works
+                combined_df = pd.concat([db_df, new_data], ignore_index=True).reset_index(drop=True)
             else:
                 combined_df = db_df
         else:
             combined_df = db_df
 
-        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
+        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last').reset_index(drop=True)
         combined_df = combined_df[combined_df['date'] >= cutoff_date]
         combined_df['label'] = combined_df['title']
         combined_df.to_parquet(DB_PATH)
