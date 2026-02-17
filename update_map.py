@@ -60,46 +60,36 @@ def inject_custom_ui(docs_path):
     index_file = os.path.join(docs_path, "index.html")
     if not os.path.exists(index_file): return
     
-    # Combined Style and HTML for reliability
     ui_blob = """
     <style>
         #info-tab { 
-            position: fixed; top: 50%; left: -300px; width: 300px; height: 280px;
+            position: fixed; top: 50%; left: -300px; width: 300px; height: 300px;
             transform: translateY(-50%); background: #111827; border: 1px solid #374151;
             border-left: none; color: #f3f4f6; transition: left 0.3s ease-in-out; 
             z-index: 99999; padding: 20px; border-radius: 0 12px 12px 0; 
-            font-family: system-ui, -apple-system, sans-serif; box-shadow: 5px 0 15px rgba(0,0,0,0.3);
+            font-family: system-ui, -apple-system, sans-serif; box-shadow: 5px 0 15px rgba(0,0,0,0.5);
         }
-        #info-tab.open { left: 0; }
+        #info-tab.open { left: 0 !important; }
         #info-toggle { 
             position: absolute; right: -40px; top: 0; width: 40px; height: 60px; 
             background: #2563eb; color: white; cursor: pointer; display: flex; 
             align-items: center; justify-content: center; border-radius: 0 8px 8px 0;
-            font-size: 20px; font-weight: bold;
+            font-size: 20px; box-shadow: 2px 0 5px rgba(0,0,0,0.2);
         }
-        #info-tab h2 { margin-top: 0; color: #60a5fa; font-size: 1.2rem; }
-        #info-tab hr { border: 0; border-top: 1px solid #374151; margin: 15px 0; }
-        #info-tab a { color: #3b82f6; text-decoration: none; }
     </style>
     <div id="info-tab">
         <div id="info-toggle" onclick="document.getElementById('info-tab').classList.toggle('open')">⚙️</div>
-        <h2>The AI Research Map</h2>
-        <p style="font-size: 0.9rem;">Interactive 5-day view of cs.AI clusters.</p>
-        <p style="font-size: 0.8rem; color: #9ca3af;">💡 Tip: Color by <b>'Reputation'</b> to see lab-weighted scoring.</p>
-        <hr>
-        <p style="font-size: 0.85rem;">Created by <br><a href="https://www.linkedin.com/in/lee-fischman/" target="_blank">Lee Fischman</a></p>
-        <p style="font-size: 0.75rem;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank">View my books on Amazon</a></p>
+        <h2 style="margin-top:0; color:#60a5fa;">The AI Research Map</h2>
+        <p style="font-size:0.9rem;">Interactive 5-day view of cs.AI research.</p>
+        <p style="font-size:0.8rem; color:#9ca3af;">💡 Tip: Color by <b>'Reputation'</b> in the menu.</p>
+        <hr style="border:0; border-top:1px solid #374151; margin:15px 0;">
+        <p style="font-size:0.85rem;">Created by <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank" style="color:#3b82f6;">Lee Fischman</a></p>
+        <p style="font-size:0.75rem;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank" style="color:#3b82f6;">Check out my books on Amazon</a></p>
     </div>
     """
-    
-    with open(index_file, "r") as f:
-        content = f.read()
-    
-    # Injecting right before the closing body tag
+    with open(index_file, "r") as f: content = f.read()
     if "</body>" in content:
-        new_content = content.replace("</body>", ui_blob + "</body>")
-        with open(index_file, "w") as f:
-            f.write(new_content)
+        with open(index_file, "w") as f: f.write(content.replace("</body>", ui_blob + "</body>"))
 
 # --- 3. EXECUTION ---
 if __name__ == "__main__":
@@ -125,15 +115,18 @@ if __name__ == "__main__":
         df = df.drop_duplicates(subset='id').reset_index(drop=True)
         df['tldr'] = generate_tldrs_local(df)
         df['Reputation'] = df.apply(calculate_reputation, axis=1)
+        
+        # NOTE: embedding-atlas often looks for a 'label' or 'name' column by default.
+        # We rename 'title' to 'label' here to satisfy it automatically.
         df['label'] = df['title']
         
         df.to_parquet(DB_PATH, index=False)
         
         print("🧠 Building Map...")
+        # REMOVED --labels to let it auto-detect the 'label' column in the parquet
         subprocess.run([
             "embedding-atlas", DB_PATH, 
             "--text", "text", 
-            "--labels", "label", 
             "--model", "allenai/specter2_base", 
             "--export-application", "site.zip"
         ], check=True)
