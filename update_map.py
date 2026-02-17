@@ -2,36 +2,41 @@ import arxiv
 import pandas as pd
 import subprocess
 import os
+from datetime import datetime
 
 def fetch_arxiv_data(limit=1000):
+    # Initialize the client correctly for v2.x
     client = arxiv.Client()
+    
+    # Define the search parameters
     search = arxiv.Search(
         query="cat:cs.AI",
         max_results=limit,
-        sort_by=arxiv.SortCriterion.SubmittedDate
+        sort_by=arxiv.SortCriterion.SubmittedDate,
+        sort_order=arxiv.SortOrder.Descending
     )
     
     data = []
-    for r in client.results():
-        # SPECTER2 likes Title and Abstract joined
-        full_text = f"{r.title}. {r.summary}"
+    # FIX: Pass the 'search' object into client.results()
+    for r in client.results(search):
+        # We add 'date' and 'primary_category' as extra columns for filtering
         data.append({
             "title": r.title,
-            "text_for_embedding": full_text,
+            "text_for_embedding": f"{r.title}. {r.summary}",
             "url": r.pdf_url,
-            "date": r.published.strftime("%Y-%m-%d")
+            "date": r.published.strftime("%Y-%m-%d"),
+            "category": r.primary_category,
+            "summary_short": r.summary[:200] + "..." # For quick hover info
         })
     return pd.DataFrame(data)
 
 if __name__ == "__main__":
-    print("📥 Fetching latest cs.AI papers...")
-    df = fetch_arxiv_data(1000)
+    print(f"📥 Starting update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Save as Parquet (efficient for large datasets)
+    df = fetch_arxiv_data(1000)
     df.to_parquet("papers.parquet")
     
-    print("🧠 Building Atlas with SPECTER2 (this may take a few minutes)...")
-    # This runs the Apple Atlas CLI to generate the static site files
+    print("🧠 Building Atlas with SPECTER2...")
     subprocess.run([
         "embedding-atlas", "papers.parquet",
         "--text", "text_for_embedding",
@@ -39,7 +44,12 @@ if __name__ == "__main__":
         "--export-application", "site.zip"
     ], check=True)
     
-    # Unzip the generated site into the 'docs' folder for GitHub Pages
+    # Create docs folder and unzip
     os.makedirs("docs", exist_ok=True)
     os.system("unzip -o site.zip -d docs/")
-    print("✅ Success! Site files generated in /docs")
+    
+    # NEW: Create a small JSON file for the 'Last Updated' badge on the README
+    with open("docs/status.json", "w") as f:
+        f.write(f'{{"last_update": "{datetime.now().strftime("%Y-%m-%d")}"}}')
+        
+    print("✅ Success! Map updated.")
