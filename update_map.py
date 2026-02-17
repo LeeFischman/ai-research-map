@@ -11,7 +11,7 @@ from transformers import pipeline
 
 DB_PATH = "database.parquet"
 
-# --- 1. CONFIGURATION & UTILS ---
+# --- 1. CONFIGURATION: TOP LABS & INSTITUTIONS ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
     "Cornell", "UWashington", "UMich", "Georgia Tech", "UT Austin", "UIUC", "NYU", 
@@ -30,6 +30,34 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
+# --- 2. REFINED REPUTATION SCORING ---
+def calculate_reputation(row):
+    score = 0
+    full_text = f"{row['title']} {row['text']}".lower()
+    
+    # A. Institution Bonus (+3)
+    if INSTITUTION_PATTERN.search(full_text): 
+        score += 3
+    
+    # B. Author Count Bonus (+1 or +2)
+    # Extracting from the 'authors' list we store during fetch
+    num_authors = len(row.get('authors', []))
+    if num_authors >= 8: score += 2
+    elif num_authors >= 4: score += 1
+    
+    # C. Practicality/Code Signal (+2)
+    if any(k in full_text for k in ['github.com', 'huggingface.co', 'open-source', 'code available']):
+        score += 2
+        
+    # D. Rigor Keywords (+1)
+    rigor_keys = ['benchmark', 'sota', 'outperforms', 'state-of-the-art', 'comprehensive', 'ablation']
+    if any(k in full_text for k in rigor_keys):
+        score += 1
+
+    # Threshold for "Reputation+" vs "Standard"
+    return "Reputation+" if score >= 4 else "Standard"
+
+# --- 3. UTILITIES ---
 def fetch_results_with_retry(client, search, max_retries=5):
     for i in range(max_retries):
         try: return list(client.results(search))
@@ -40,6 +68,7 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
+    print(f"🤖 Summarizing {len(df)} new papers...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
@@ -52,41 +81,33 @@ def generate_tldrs_local(df):
     gc.collect()
     return tldrs
 
-def judge_significance(row):
-    score = 0
-    full_text = f"{row['title']} {row['text']}".lower() 
-    if INSTITUTION_PATTERN.search(full_text): score += 2
-    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota']): score += 1
-    return "High Priority" if score >= 2 else "Standard"
-
-# --- 2. DARK MODE UI INJECTION ---
+# --- 4. UI INJECTION (LEFT-CENTERED DARK MODE) ---
 def inject_custom_ui(docs_path):
     index_file = os.path.join(docs_path, "index.html")
     if not os.path.exists(index_file): return
-
+    
     custom_style = """
     <style>
         #info-tab {
-            position: fixed; top: 20px; right: -320px; width: 320px;
-            background: rgba(15, 23, 42, 0.95); border-left: 3px solid #3b82f6;
+            position: fixed; top: 50%; left: -320px; width: 320px; transform: translateY(-50%);
+            background: rgba(15, 23, 42, 0.95); border-right: 3px solid #3b82f6;
             backdrop-filter: blur(10px); color: #f8fafc;
-            box-shadow: -10px 0 30px rgba(0,0,0,0.5); transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            z-index: 9999; padding: 24px; border-radius: 12px 0 0 12px; font-family: 'Inter', system-ui, sans-serif;
+            box-shadow: 10px 0 30px rgba(0,0,0,0.5); transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 9999; padding: 24px; border-radius: 0 12px 12px 0; font-family: 'Inter', system-ui, sans-serif;
         }
-        #info-tab.open { right: 0; }
+        #info-tab.open { left: 0; }
         #info-toggle {
-            position: absolute; left: -48px; top: 0; width: 48px; height: 48px;
-            background: #1e40af; color: white; display: flex; align-items: center;
-            justify-content: center; cursor: pointer; border-radius: 12px 0 0 12px;
-            font-size: 20px; box-shadow: -4px 0 10px rgba(0,0,0,0.2);
+            position: absolute; right: -48px; top: 50%; transform: translateY(-50%);
+            width: 48px; height: 48px; background: #1e40af; color: white; display: flex; 
+            align-items: center; justify-content: center; cursor: pointer; border-radius: 0 12px 12px 0;
+            font-size: 20px; box-shadow: 4px 0 10px rgba(0,0,0,0.2);
         }
-        #info-tab h2 { margin: 0 0 4px 0; font-size: 18px; color: #60a5fa; font-weight: 700; letter-spacing: -0.025em; }
+        #info-tab h2 { margin: 0 0 4px 0; font-size: 18px; color: #60a5fa; font-weight: 700; }
         #info-tab .author { font-size: 14px; margin-bottom: 20px; color: #94a3b8; }
-        #info-tab a { color: #3b82f6; text-decoration: none; transition: color 0.2s; }
-        #info-tab a:hover { color: #93c5fd; text-decoration: underline; }
+        #info-tab a { color: #3b82f6; text-decoration: none; font-weight: 500; }
         #info-tab hr { border: 0; border-top: 1px solid #334155; margin: 16px 0; }
         #info-tab p { font-size: 13px; line-height: 1.6; color: #cbd5e1; margin-bottom: 12px; }
-        .badge { background: #1e293b; padding: 4px 8px; border-radius: 4px; font-size: 11px; border: 1px solid #334155; }
+        .tip { background: rgba(59, 130, 246, 0.1); border-left: 2px solid #3b82f6; padding: 10px; font-style: italic; border-radius: 0 4px 4px 0; }
     </style>
     """
     
@@ -95,18 +116,13 @@ def inject_custom_ui(docs_path):
         <div id="info-toggle">⚙️</div>
         <h2>The AI Research Map</h2>
         <div class="author">by <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank">Lee Fischman</a></div>
-        
-        <p>A rolling 5-day semantic visualization of <b>cs.AI</b> research clusters from arXiv.</p>
-        
+        <p>A 5-day view of <b>cs.AI</b> research clusters from arXiv.</p>
+        <p class="tip">💡 Color by <b>'Reputation'</b> to highlight papers from major labs, high author counts, and code releases.</p>
         <hr>
-        
-        <p>📚 <b>Latest Work:</b><br><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank">Check out my books on Amazon</a></p>
-        
-        <p>🛠️ <b>Technology:</b><br>Powered by <a href="https://apple.github.io/embedding-atlas/" target="_blank">Embedding Atlas</a> & LaMini-T5.</p>
-        
+        <p>📚 <b>Books:</b> <a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank">Check out my books on Amazon</a></p>
+        <p>🛠️ <b>Technology:</b> <a href="https://apple.github.io/embedding-atlas/" target="_blank">Embedding Atlas</a></p>
         <hr>
-        
-        <div class="badge">Last Sync: """ + datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M') + """ UTC</div>
+        <div style="font-size: 11px; color: #94a3b8;">Last Sync: """ + datetime.now(timezone.utc).strftime('%Y-%m-%d') + """ UTC</div>
     </div>
     <script>
         document.getElementById('info-toggle').onclick = function() {
@@ -115,18 +131,12 @@ def inject_custom_ui(docs_path):
     </script>
     """
 
-    with open(index_file, "r") as f:
-        content = f.read()
+    with open(index_file, "r") as f: content = f.read()
+    if "</head>" in content: content = content.replace("</head>", custom_style + "</head>")
+    if "</body>" in content: content = content.replace("</body>", tab_html + "</body>")
+    with open(index_file, "w") as f: f.write(content)
 
-    if "</head>" in content:
-        content = content.replace("</head>", custom_style + "</head>")
-    if "</body>" in content:
-        content = content.replace("</body>", tab_html + "</body>")
-
-    with open(index_file, "w") as f:
-        f.write(content)
-
-# --- 3. MAIN EXECUTION ---
+# --- 5. MAIN EXECUTION ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
@@ -149,7 +159,8 @@ if __name__ == "__main__":
             "title": r.title,
             "text": f"{r.title}. {r.summary}",
             "url": r.pdf_url,
-            "date": r.published.strftime("%Y-%m-%d")
+            "date": r.published.strftime("%Y-%m-%d"),
+            "authors": [a.name for a in r.authors]
         } for r in results])
 
         if not db_df.empty:
@@ -158,22 +169,6 @@ if __name__ == "__main__":
 
         if not new_data.empty:
             new_data['tldr'] = generate_tldrs_local(new_data)
-            new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
+            new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
             combined_df = pd.concat([db_df, new_data], ignore_index=True)
-        else: combined_df = db_df
-
-        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
-        combined_df = combined_df[combined_df['date'] >= cutoff_date]
-        combined_df['label'] = combined_df['title']
-        combined_df.to_parquet(DB_PATH)
-        
-        print("🧠 Creating Vector Map...")
-        subprocess.run(["embedding-atlas", DB_PATH, "--text", "text", "--model", "allenai/specter2_base", "--export-application", "site.zip"], check=True)
-        
-        os.makedirs("docs", exist_ok=True)
-        os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
-        
-        print("💉 Injecting Dark Mode UI...")
-        inject_custom_ui("docs")
-
-    print("✨ Process Complete!")
+        else: combined
