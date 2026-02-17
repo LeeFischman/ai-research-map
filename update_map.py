@@ -54,13 +54,13 @@ def fetch_results_with_retry(client, search, max_retries=5):
 
 def generate_tldrs_local(df):
     if df.empty: return []
-    # Force max_length to None to stop the warning
+    # Set max_length to None and let max_new_tokens handle it
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     tldrs = []
     for i, row in df.iterrows():
         prompt = f"Summarize: {row['title']}"
         try:
-            res = summarizer(prompt, max_new_tokens=30, do_sample=False, max_length=128)
+            res = summarizer(prompt, max_new_tokens=30, do_sample=False)
             tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
         except: tldrs.append("Summary unavailable.")
     del summarizer
@@ -94,7 +94,7 @@ def inject_custom_ui(docs_path):
         .tip { background: rgba(59, 130, 246, 0.1); border-left: 2px solid #3b82f6; padding: 10px; font-style: italic; border-radius: 0 4px 4px 0; }
     </style>
     """
-    tab_html = """
+    tab_html = f"""
     <div id="info-tab">
         <div id="info-toggle">⚙️</div>
         <h2>The AI Research Map</h2>
@@ -105,12 +105,12 @@ def inject_custom_ui(docs_path):
         <p>📚 <b>Books:</b> <a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank">Check out my books on Amazon</a></p>
         <p>🛠️ <b>Technology:</b> <a href="https://apple.github.io/embedding-atlas/" target="_blank">Embedding Atlas</a></p>
         <hr>
-        <div style="font-size: 11px; color: #94a3b8;">Last Sync: """ + datetime.now(timezone.utc).strftime('%Y-%m-%d') + """ UTC</div>
+        <div style="font-size: 11px; color: #94a3b8;">Last Sync: {datetime.now(timezone.utc).strftime('%Y-%m-%d')} UTC</div>
     </div>
     <script>
-        document.getElementById('info-toggle').onclick = function() {
+        document.getElementById('info-toggle').onclick = function() {{
             document.getElementById('info-tab').classList.toggle('open');
-        };
+        }};
     </script>
     """
     with open(index_file, "r") as f: content = f.read()
@@ -123,24 +123,25 @@ if __name__ == "__main__":
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=5)).strftime('%Y-%m-%d')
     
+    db_df = pd.DataFrame()
     if os.path.exists(DB_PATH):
-        db_df = pd.read_parquet(DB_PATH)
-        
-        # FIX: Reset index immediately to prevent InvalidIndexError
-        db_df = db_df.reset_index(drop=True)
-        
-        if 'Paper_Priority' in db_df.columns:
-            db_df = db_df.rename(columns={'Paper_Priority': 'Reputation'})
-        
-        if 'Reputation' in db_df.columns:
-            db_df['Reputation'] = db_df['Reputation'].replace({
-                'Standard': 'Reputation Std.',
-                'High Priority': 'Reputation Enhanced'
-            })
-        
-        db_df = db_df[db_df['date'] >= cutoff_date]
-    else:
-        db_df = pd.DataFrame()
+        try:
+            db_df = pd.read_parquet(DB_PATH)
+            # FORCE UNIQUE INDEX ON LOAD
+            db_df = db_df.reset_index(drop=True)
+            
+            # Migration logic
+            if 'Paper_Priority' in db_df.columns:
+                db_df = db_df.rename(columns={'Paper_Priority': 'Reputation'})
+            if 'Reputation' in db_df.columns:
+                db_df['Reputation'] = db_df['Reputation'].replace({
+                    'Standard': 'Reputation Std.',
+                    'High Priority': 'Reputation Enhanced'
+                })
+            db_df = db_df[db_df['date'] >= cutoff_date].reset_index(drop=True)
+        except Exception as e:
+            print(f"⚠️ Database load error, starting fresh: {e}")
+            db_df = pd.DataFrame()
 
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     start_time = now - timedelta(days=5)
@@ -150,7 +151,7 @@ if __name__ == "__main__":
     
     if results or not db_df.empty:
         if results:
-            all_fetched = pd.DataFrame([{
+            new_data = pd.DataFrame([{
                 "id": r.entry_id.split('/')[-1],
                 "title": r.title,
                 "text": f"{r.title}. {r.summary}",
@@ -158,18 +159,18 @@ if __name__ == "__main__":
                 "date": r.published.strftime("%Y-%m-%d"),
                 "authors": [a.name for a in r.authors]
             } for r in results])
+            
+            # Force unique index for new data too
+            new_data = new_data.reset_index(drop=True)
 
             if not db_df.empty:
-                # FIX: Ensure unique IDs before merging
-                new_data = all_fetched[~all_fetched['id'].isin(db_df['id'])].copy()
-            else:
-                new_data = all_fetched.copy()
+                new_data = new_data[~new_data['id'].isin(db_df['id'])].copy()
 
             if not new_data.empty:
                 new_data['tldr'] = generate_tldrs_local(new_data)
                 new_data['Reputation'] = new_data.apply(calculate_reputation, axis=1)
-                # FIX: reset_index ensures concat always works
-                combined_df = pd.concat([db_df, new_data], ignore_index=True).reset_index(drop=True)
+                # CONCAT WITH CLEAN INDICES
+                combined_df = pd.concat([db_df, new_data], axis=0, ignore_index=True)
             else:
                 combined_df = db_df
         else:
