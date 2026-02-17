@@ -46,18 +46,17 @@ def fetch_results_with_retry(client, search, max_retries=5):
 def generate_tldrs_local(df):
     if df.empty: return []
     print("🤖 Loading LaMini-Flan-T5-248M...")
-    # Explicitly setting config to avoid the max_length warning
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     
     tldrs = []
     for i, row in df.iterrows():
-        prompt = f"Summarize: {row['title']}. {row['text_for_embedding'][:400]}"
+        # Keep prompt very short to avoid truncation issues
+        prompt = f"Summarize: {row['title']}"
         try:
-            # We only use max_new_tokens here
-            res = summarizer(prompt, max_new_tokens=40, do_sample=False, truncation=True)
+            res = summarizer(prompt, max_new_tokens=30, do_sample=False)
             output = res[0]['generated_text']
-            if prompt in output: output = output.replace(prompt, "").strip()
-            tldrs.append(output.strip())
+            # Basic cleanup
+            tldrs.append(output.replace(prompt, "").strip())
         except:
             tldrs.append("Summary unavailable.")
         if (i + 1) % 10 == 0: print(f"✅ Processed {i+1}/{len(df)}...")
@@ -66,10 +65,23 @@ def generate_tldrs_local(df):
     gc.collect()
     return tldrs
 
-# --- 4. MAIN ---
+# --- 4. SCORING LOGIC ---
+def judge_significance(row):
+    score = 0
+    full_text = f"{row['title']} {row['text_for_embedding']}".lower()
+    
+    # +2 for Elite Institutions
+    if INSTITUTION_PATTERN.search(full_text):
+        score += 2
+    # +1 for code or performance keywords
+    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']):
+        score += 1
+        
+    return "High Priority" if score >= 2 else "Standard"
+
+# --- 5. MAIN ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    # Using a slightly longer delay to be safe
     client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     
     yesterday = now - timedelta(days=1)
@@ -82,18 +94,29 @@ if __name__ == "__main__":
     if not results:
         print("📭 No new papers.")
     else:
-        df = pd.DataFrame([{
-            "title": r.title,
-            "text_for_embedding": f"{r.title}. {r.summary}",
-            "url": r.pdf_url,
-            "date": r.published.strftime("%Y-%m-%d")
-        } for r in results])
+        # Create initial list
+        data_list = []
+        for r in results:
+            data_list.append({
+                "title": r.title,
+                "text_for_embedding": f"{r.title}. {r.summary}",
+                "url": r.pdf_url,
+                "date": r.published.strftime("%Y-%m-%d")
+            })
         
+        df = pd.DataFrame(data_list)
+        
+        # Add the TL;DRs
         df['tldr'] = generate_tldrs_local(df)
+        
+        # IMPORTANT: Add the score column so users can select it in the UI
+        df['Paper_Priority'] = df.apply(judge_significance, axis=1)
+        
+        # Save to parquet
         df.to_parquet("papers.parquet")
         
         print("🧠 Creating Vector Map...")
-        # Removed --color flag entirely as the CLI version 0.17.0 doesn't support it
+        # No --color flag here; the UI handles it via the 'Paper_Priority' column
         subprocess.run([
             "embedding-atlas", "papers.parquet",
             "--text", "text_for_embedding",
