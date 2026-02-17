@@ -35,7 +35,7 @@ def fetch_results_with_retry(client, search, max_retries=5):
             return list(client.results(search))
         except Exception as e:
             if "429" in str(e):
-                wait = (i + 1) * 30  # Wait 30, 60, 90... seconds
+                wait = (i + 1) * 30
                 print(f"⚠️ Rate limited (429). Retrying in {wait}s...")
                 time.sleep(wait)
             else:
@@ -46,16 +46,18 @@ def fetch_results_with_retry(client, search, max_retries=5):
 def generate_tldrs_local(df):
     if df.empty: return []
     print("🤖 Loading LaMini-Flan-T5-248M...")
+    # Explicitly setting config to avoid the max_length warning
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
     
     tldrs = []
     for i, row in df.iterrows():
-        prompt = f"Summarize this research in one short sentence: {row['title']}. {row['text_for_embedding'][:500]}"
+        prompt = f"Summarize: {row['title']}. {row['text_for_embedding'][:400]}"
         try:
-            res = summarizer(prompt, max_new_tokens=50, do_sample=False, truncation=True)
+            # We only use max_new_tokens here
+            res = summarizer(prompt, max_new_tokens=40, do_sample=False, truncation=True)
             output = res[0]['generated_text']
             if prompt in output: output = output.replace(prompt, "").strip()
-            tldrs.append(output.split("Summarize this")[-1].strip())
+            tldrs.append(output.strip())
         except:
             tldrs.append("Summary unavailable.")
         if (i + 1) % 10 == 0: print(f"✅ Processed {i+1}/{len(df)}...")
@@ -64,18 +66,11 @@ def generate_tldrs_local(df):
     gc.collect()
     return tldrs
 
-# --- 4. SCORING ---
-def judge_significance(row):
-    score = 0
-    full_text = f"{row['title']} {row['text_for_embedding']}".lower()
-    if INSTITUTION_PATTERN.search(full_text): score += 2
-    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'breakthrough']): score += 1
-    return "Significant" if score >= 2 else "Standard"
-
-# --- 5. MAIN ---
+# --- 4. MAIN ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    client = arxiv.Client(page_size=100, delay_seconds=3, num_retries=5)
+    # Using a slightly longer delay to be safe
+    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     
     yesterday = now - timedelta(days=1)
     date_query = f"submittedDate:[{yesterday.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
@@ -95,13 +90,13 @@ if __name__ == "__main__":
         } for r in results])
         
         df['tldr'] = generate_tldrs_local(df)
-        df['status'] = df.apply(judge_significance, axis=1)
         df.to_parquet("papers.parquet")
         
+        print("🧠 Creating Vector Map...")
+        # Removed --color flag entirely as the CLI version 0.17.0 doesn't support it
         subprocess.run([
             "embedding-atlas", "papers.parquet",
             "--text", "text_for_embedding",
-            "--color", "status",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
         ], check=True)
