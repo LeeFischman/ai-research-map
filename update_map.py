@@ -33,9 +33,9 @@ def generate_tldrs_local(df):
         return []
     
     print("🤖 Loading LaMini-Flan-T5-248M...")
-    # Using 'text2text-generation' which is the correct task for T5 models in Transformers v5
+    # Switched to 'text-generation' as per the available tasks in your log
     summarizer = pipeline(
-        "text2text-generation", 
+        "text-generation", 
         model="MBZUAI/LaMini-Flan-T5-248M", 
         device=-1, 
         torch_dtype=torch.float32
@@ -45,11 +45,15 @@ def generate_tldrs_local(df):
     print(f"✍️ Summarizing {len(df)} papers...")
     
     for i, row in df.iterrows():
-        # Instruction-tuned models like LaMini work best with a clear prompt
         prompt = f"Summarize this research in one short sentence: {row['title']}. {row['text_for_embedding'][:500]}"
         try:
-            res = summarizer(prompt, max_length=40, min_length=10, do_sample=False)
-            tldrs.append(res[0]['generated_text'].strip())
+            # Added truncation=True to handle long input strings
+            res = summarizer(prompt, max_length=60, min_length=10, do_sample=False, truncation=True)
+            # The output for text-generation often includes the prompt; we strip it if necessary
+            output = res[0]['generated_text']
+            if prompt in output:
+                output = output.replace(prompt, "").strip()
+            tldrs.append(output)
         except Exception as e:
             tldrs.append("Summary currently unavailable.")
             
@@ -75,7 +79,6 @@ def judge_significance(row):
 
 # --- 4. MAIN EXECUTION ---
 if __name__ == "__main__":
-    # Use modern timezone-aware UTC
     now = datetime.now(timezone.utc)
     print(f"📅 Build Date: {now.strftime('%Y-%m-%d %H:%M')} UTC")
 
