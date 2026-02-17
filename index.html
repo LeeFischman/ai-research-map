@@ -14,32 +14,25 @@
     <link rel="stylesheet" crossorigin href="./assets/index-Df_vtN7h.css">
   </head>
   <body>
-    <div id="app" class="embedding-atlas-root"></div>
-  
-    <style>
-        #info-tab { 
-            position: fixed; top: 50%; left: -300px; width: 300px; height: 300px;
-            transform: translateY(-50%); background: #111827; border: 1px solid #374151;
-            border-left: none; color: #f3f4f6; transition: left 0.3s ease-in-out; 
-            z-index: 99999; padding: 20px; border-radius: 0 12px 12px 0; 
-            font-family: system-ui, -apple-system, sans-serif; box-shadow: 5px 0 15px rgba(0,0,0,0.5);
-        }
-        #info-tab.open { left: 0 !important; }
-        #info-toggle { 
-            position: absolute; right: -40px; top: 0; width: 40px; height: 60px; 
-            background: #2563eb; color: white; cursor: pointer; display: flex; 
-            align-items: center; justify-content: center; border-radius: 0 8px 8px 0;
-            font-size: 20px; box-shadow: 2px 0 5px rgba(0,0,0,0.2);
-        }
-    </style>
-    <div id="info-tab">
-        <div id="info-toggle" onclick="document.getElementById('info-tab').classList.toggle('open')">⚙️</div>
-        <h2 style="margin-top:0; color:#60a5fa;">The AI Research Map</h2>
-        <p style="font-size:0.9rem;">Interactive 5-day view of cs.AI research.</p>
-        <p style="font-size:0.8rem; color:#9ca3af;">💡 Tip: Color by <b>'Reputation'</b> in the menu.</p>
-        <hr style="border:0; border-top:1px solid #374151; margin:15px 0;">
-        <p style="font-size:0.85rem;">Created by <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank" style="color:#3b82f6;">Lee Fischman</a></p>
-        <p style="font-size:0.75rem;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank" style="color:#3b82f6;">Check out my books on Amazon</a></p>
+    <div id="custom-overlay" style="position:fixed; top:20px; left:20px; z-index:2147483647;">
+        <button id="info-toggle" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; box-shadow:0 4px 6px rgba(0,0,0,0.3);">
+            ⚙️ Menu
+        </button>
+        <div id="info-tab" style="display:none; margin-top:10px; width:280px; background:#111827; border:1px solid #374151; color:white; padding:20px; border-radius:12px; box-shadow:0 10px 15px rgba(0,0,0,0.5); font-family:sans-serif;">
+            <h2 style="margin:0 0 10px 0; color:#60a5fa; font-size:18px;">AI Research Map</h2>
+            <p style="font-size:13px; color:#d1d5db;">Color by <b>'Reputation'</b> to see lab-weighted scoring.</p>
+            <hr style="border:0; border-top:1px solid #374151; margin:15px 0;">
+            <p style="font-size:13px;">By <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank" style="color:#3b82f6;">Lee Fischman</a></p>
+            <p style="font-size:12px;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank" style="color:#3b82f6;">My Books on Amazon</a></p>
+        </div>
     </div>
-    </body>
+    <script>
+        document.getElementById('info-toggle').onclick = function() {
+            var tab = document.getElementById('info-tab');
+            tab.style.display = tab.style.display === 'none' ? 'block' : 'none';
+        };
+    </script>
+    
+    <div id="app" class="embedding-atlas-root"></div>
+  </body>
 </html>
