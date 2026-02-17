@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
           update-environment: true # Forces the runner to prioritize this version
           cache: 'pip'
 
@@ -34,5 +34,6 @@ jobs:
         with:
           folder: docs
           branch: gh-pages # This creates a clean branch just for the website
+
 
 
