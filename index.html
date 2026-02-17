@@ -14,25 +14,22 @@
     <link rel="stylesheet" crossorigin href="./assets/index-Df_vtN7h.css">
   </head>
   <body>
-    <div id="custom-overlay" style="position:fixed; top:20px; left:20px; z-index:2147483647;">
-        <button id="info-toggle" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; box-shadow:0 4px 6px rgba(0,0,0,0.3);">
-            ⚙️ Menu
-        </button>
-        <div id="info-tab" style="display:none; margin-top:10px; width:280px; background:#111827; border:1px solid #374151; color:white; padding:20px; border-radius:12px; box-shadow:0 10px 15px rgba(0,0,0,0.5); font-family:sans-serif;">
-            <h2 style="margin:0 0 10px 0; color:#60a5fa; font-size:18px;">AI Research Map</h2>
-            <p style="font-size:13px; color:#d1d5db;">Color by <b>'Reputation'</b> to see lab-weighted scoring.</p>
-            <hr style="border:0; border-top:1px solid #374151; margin:15px 0;">
-            <p style="font-size:13px;">By <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank" style="color:#3b82f6;">Lee Fischman</a></p>
-            <p style="font-size:12px;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank" style="color:#3b82f6;">My Books on Amazon</a></p>
+        <div id="custom-overlay" style="position:fixed; top:20px; left:20px; z-index:999999;">
+            <button id="info-toggle" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold;">⚙️ Menu</button>
+            <div id="info-tab" style="display:none; margin-top:10px; width:260px; background:#111827; border:1px solid #374151; color:white; padding:20px; border-radius:12px; font-family:sans-serif;">
+                <h2 style="margin:0; color:#60a5fa; font-size:18px;">AI Research Map</h2>
+                <p style="font-size:13px;">By Lee Fischman</p>
+                <hr style="border:0; border-top:1px solid #374151;">
+                <p style="font-size:12px;">Color by 'Reputation' to see weighted labs.</p>
+            </div>
         </div>
-    </div>
-    <script>
-        document.getElementById('info-toggle').onclick = function() {
-            var tab = document.getElementById('info-tab');
-            tab.style.display = tab.style.display === 'none' ? 'block' : 'none';
-        };
-    </script>
-    
+        <script>
+            document.getElementById('info-toggle').onclick = function() {
+                var tab = document.getElementById('info-tab');
+                tab.style.display = (tab.style.display === 'none' || tab.style.display === '') ? 'block' : 'none';
+            };
+        </script>
+        
     <div id="app" class="embedding-atlas-root"></div>
   </body>
 </html>
