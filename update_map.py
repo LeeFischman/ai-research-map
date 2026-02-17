@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from transformers import pipeline
 
+DB_PATH = "database.parquet"
+
 # --- 1. CONFIGURATION ---
 INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "MIT", "Stanford", "CMU", "Carnegie Mellon", "UC Berkeley", "Harvard", "Princeton", 
@@ -28,7 +30,6 @@ INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
     "ANU", "Melbourne", "Sydney"
 ]) + r")\b", re.IGNORECASE)
 
-# --- 2. RETRY LOGIC FOR ARXIV ---
 def fetch_results_with_retry(client, search, max_retries=5):
     for i in range(max_retries):
         try:
@@ -36,89 +37,82 @@ def fetch_results_with_retry(client, search, max_retries=5):
         except Exception as e:
             if "429" in str(e):
                 wait = (i + 1) * 30
-                print(f"⚠️ Rate limited (429). Retrying in {wait}s...")
                 time.sleep(wait)
-            else:
-                raise e
-    raise Exception("Max retries exceeded for arXiv API")
+            else: raise e
+    raise Exception("Max retries exceeded")
 
-# --- 3. AI SUMMARIZATION ---
 def generate_tldrs_local(df):
     if df.empty: return []
-    print("🤖 Loading LaMini-Flan-T5-248M...")
     summarizer = pipeline("text-generation", model="MBZUAI/LaMini-Flan-T5-248M", device=-1)
-    
     tldrs = []
     for i, row in df.iterrows():
-        # Keep prompt very short to avoid truncation issues
         prompt = f"Summarize: {row['title']}"
         try:
             res = summarizer(prompt, max_new_tokens=30, do_sample=False)
-            output = res[0]['generated_text']
-            # Basic cleanup
-            tldrs.append(output.replace(prompt, "").strip())
-        except:
-            tldrs.append("Summary unavailable.")
-        if (i + 1) % 10 == 0: print(f"✅ Processed {i+1}/{len(df)}...")
-    
+            tldrs.append(res[0]['generated_text'].replace(prompt, "").strip())
+        except: tldrs.append("Summary unavailable.")
     del summarizer
     gc.collect()
     return tldrs
 
-# --- 4. SCORING LOGIC ---
 def judge_significance(row):
     score = 0
     full_text = f"{row['title']} {row['text_for_embedding']}".lower()
-    
-    # +2 for Elite Institutions
-    if INSTITUTION_PATTERN.search(full_text):
-        score += 2
-    # +1 for code or performance keywords
-    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms']):
-        score += 1
-        
+    if INSTITUTION_PATTERN.search(full_text): score += 2
+    if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota']): score += 1
     return "High Priority" if score >= 2 else "Standard"
 
-# --- 5. MAIN ---
+# --- MAIN LOGIC ---
 if __name__ == "__main__":
     now = datetime.now(timezone.utc)
-    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
+    cutoff_date = (now - timedelta(days=4)).strftime('%Y-%m-%d')
     
+    # 1. Load existing database
+    if os.path.exists(DB_PATH):
+        db_df = pd.read_parquet(DB_PATH)
+        # Keep only last 4 days
+        db_df = db_df[db_df['date'] >= cutoff_date]
+        print(f"Loaded existing database. Rows after filtering: {len(db_df)}")
+    else:
+        db_df = pd.DataFrame()
+        print("No database found. Creating fresh.")
+
+    # 2. Fetch today's papers
+    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
     yesterday = now - timedelta(days=1)
     date_query = f"submittedDate:[{yesterday.strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]"
-    
-    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=100, sort_by=arxiv.SortCriterion.SubmittedDate)
+    search = arxiv.Search(query=f"cat:cs.AI AND {date_query}", max_results=100)
     
     results = fetch_results_with_retry(client, search)
     
-    if not results:
-        print("📭 No new papers.")
-    else:
-        # Create initial list
-        data_list = []
-        for r in results:
-            data_list.append({
-                "title": r.title,
-                "text_for_embedding": f"{r.title}. {r.summary}",
-                "url": r.pdf_url,
-                "date": r.published.strftime("%Y-%m-%d")
-            })
+    if results:
+        new_data = pd.DataFrame([{
+            "id": r.entry_id.split('/')[-1], # Unique ID for deduplication
+            "title": r.title,
+            "text_for_embedding": f"{r.title}. {r.summary}",
+            "url": r.pdf_url,
+            "date": r.published.strftime("%Y-%m-%d")
+        } for r in results])
+
+        # Generate TLDR and Priority only for NEW papers to save time/compute
+        new_data['tldr'] = generate_tldrs_local(new_data)
+        new_data['Paper_Priority'] = new_data.apply(judge_significance, axis=1)
+
+        # 3. Merge and Overwrite (Deduplicate by 'id')
+        combined_df = pd.concat([db_df, new_data], ignore_index=True)
+        # Keep the last occurrence (the newest version) of any paper ID
+        combined_df = combined_df.drop_duplicates(subset=['id'], keep='last')
         
-        df = pd.DataFrame(data_list)
+        # Final filter to ensure rolling window
+        combined_df = combined_df[combined_df['date'] >= cutoff_date]
         
-        # Add the TL;DRs
-        df['tldr'] = generate_tldrs_local(df)
+        # 4. Save Database
+        combined_df.to_parquet(DB_PATH)
+        print(f"Database saved with {len(combined_df)} total papers.")
         
-        # IMPORTANT: Add the score column so users can select it in the UI
-        df['Paper_Priority'] = df.apply(judge_significance, axis=1)
-        
-        # Save to parquet
-        df.to_parquet("papers.parquet")
-        
-        print("🧠 Creating Vector Map...")
-        # No --color flag here; the UI handles it via the 'Paper_Priority' column
+        # 5. Build Map
         subprocess.run([
-            "embedding-atlas", "papers.parquet",
+            "embedding-atlas", DB_PATH,
             "--text", "text_for_embedding",
             "--model", "allenai/specter2_base",
             "--export-application", "site.zip"
@@ -126,4 +120,7 @@ if __name__ == "__main__":
         
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
+    else:
+        print("No new papers today.")
+
     print("✨ Done!")
