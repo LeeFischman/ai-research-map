@@ -12,8 +12,34 @@
     </style>
     <script type="module" crossorigin src="./assets/index-BtGntx4N.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-Df_vtN7h.css">
-  <style>#info-tab { position: fixed; top: 50%; left: -320px; width: 320px; transform: translateY(-50%); background: rgba(15, 23, 42, 0.95); border-right: 3px solid #3b82f6; color: #f8fafc; transition: all 0.4s; z-index: 9999; padding: 24px; border-radius: 0 12px 12px 0; font-family: sans-serif; } #info-tab.open { left: 0; } #info-toggle { position: absolute; right: -48px; top: 50%; width: 48px; height: 48px; background: #1e40af; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 0 12px 12px 0; }</style></head>
+  </head>
   <body>
     <div id="app" class="embedding-atlas-root"></div>
-  <div id='info-tab'><div id='info-toggle'>⚙️</div><h2>The AI Research Map</h2><p>Color by <b>'Reputation'</b> for lab-weighted scoring.</p><hr><p>By <a href='https://www.linkedin.com/in/lee-fischman/' style='color:#60a5fa'>Lee Fischman</a></p></div><script>document.getElementById('info-toggle').onclick=function(){document.getElementById('info-tab').classList.toggle('open');</script>}</body>
+  
+    <style>
+        #info-tab { 
+            position: fixed; top: 50%; left: -300px; width: 300px; height: 300px;
+            transform: translateY(-50%); background: #111827; border: 1px solid #374151;
+            border-left: none; color: #f3f4f6; transition: left 0.3s ease-in-out; 
+            z-index: 99999; padding: 20px; border-radius: 0 12px 12px 0; 
+            font-family: system-ui, -apple-system, sans-serif; box-shadow: 5px 0 15px rgba(0,0,0,0.5);
+        }
+        #info-tab.open { left: 0 !important; }
+        #info-toggle { 
+            position: absolute; right: -40px; top: 0; width: 40px; height: 60px; 
+            background: #2563eb; color: white; cursor: pointer; display: flex; 
+            align-items: center; justify-content: center; border-radius: 0 8px 8px 0;
+            font-size: 20px; box-shadow: 2px 0 5px rgba(0,0,0,0.2);
+        }
+    </style>
+    <div id="info-tab">
+        <div id="info-toggle" onclick="document.getElementById('info-tab').classList.toggle('open')">⚙️</div>
+        <h2 style="margin-top:0; color:#60a5fa;">The AI Research Map</h2>
+        <p style="font-size:0.9rem;">Interactive 5-day view of cs.AI research.</p>
+        <p style="font-size:0.8rem; color:#9ca3af;">💡 Tip: Color by <b>'Reputation'</b> in the menu.</p>
+        <hr style="border:0; border-top:1px solid #374151; margin:15px 0;">
+        <p style="font-size:0.85rem;">Created by <a href="https://www.linkedin.com/in/lee-fischman/" target="_blank" style="color:#3b82f6;">Lee Fischman</a></p>
+        <p style="font-size:0.75rem;"><a href="https://www.amazon.com/dp/B0GMVH6P2W" target="_blank" style="color:#3b82f6;">Check out my books on Amazon</a></p>
+    </div>
+    </body>
 </html>
