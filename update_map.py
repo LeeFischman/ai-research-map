@@ -5,7 +5,7 @@ import os
 import gc
 import torch
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from transformers import pipeline
 
 # --- 1. CONFIGURATION: THE 95 ELITE INSTITUTIONS ---
@@ -32,12 +32,12 @@ def generate_tldrs_local(df):
     if df.empty:
         return []
     
-    print("🤖 Loading LaMini-Flan-T5-248M (CPU Mode)...")
-    # Initialize the local pipeline
+    print("🤖 Loading LaMini-Flan-T5-248M...")
+    # Using 'text2text-generation' which is the correct task for T5 models in Transformers v5
     summarizer = pipeline(
-        "summarization", 
+        "text2text-generation", 
         model="MBZUAI/LaMini-Flan-T5-248M", 
-        device=-1, # Force CPU
+        device=-1, 
         torch_dtype=torch.float32
     )
     
@@ -45,18 +45,17 @@ def generate_tldrs_local(df):
     print(f"✍️ Summarizing {len(df)} papers...")
     
     for i, row in df.iterrows():
-        # Truncate input to keep it fast
-        input_text = f"Summarize in one short sentence: {row['title']}. {row['text_for_embedding'][:600]}"
+        # Instruction-tuned models like LaMini work best with a clear prompt
+        prompt = f"Summarize this research in one short sentence: {row['title']}. {row['text_for_embedding'][:500]}"
         try:
-            res = summarizer(input_text, max_length=30, min_length=10, do_sample=False)
-            tldrs.append(res[0]['summary_text'].replace("Summary:", "").strip())
+            res = summarizer(prompt, max_length=40, min_length=10, do_sample=False)
+            tldrs.append(res[0]['generated_text'].strip())
         except Exception as e:
             tldrs.append("Summary currently unavailable.")
             
         if (i + 1) % 10 == 0:
             print(f"✅ Processed {i+1}/{len(df)} papers...")
 
-    # Critical: Free up RAM for the Atlas embedding step
     del summarizer
     gc.collect()
     return tldrs
@@ -64,14 +63,11 @@ def generate_tldrs_local(df):
 # --- 3. SIGNIFICANCE SCORING LOGIC ---
 def judge_significance(row):
     score = 0
-    # Combine title and abstract for scanning
     full_text = f"{row['title']} {row['text_for_embedding']}".lower()
     
-    # Check for Elite Institutions (from your list)
     if INSTITUTION_PATTERN.search(full_text):
         score += 2
         
-    # Check for Code Links or High-Impact Keywords
     if any(k in full_text for k in ['github.com', 'huggingface.co', 'sota', 'outperforms', 'breakthrough']):
         score += 1
         
@@ -79,12 +75,16 @@ def judge_significance(row):
 
 # --- 4. MAIN EXECUTION ---
 if __name__ == "__main__":
-    print(f"📅 Build Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
+    # Use modern timezone-aware UTC
+    now = datetime.now(timezone.utc)
+    print(f"📅 Build Date: {now.strftime('%Y-%m-%d %H:%M')} UTC")
 
-    # A. Fetch papers from the last 24 hours
     client = arxiv.Client()
-    yesterday = datetime.utcnow() - timedelta(days=1)
-    date_query = f"submittedDate:[{yesterday.strftime('%Y%m%d%H%M')} TO {datetime.utcnow().strftime('%Y%m%d%H%M')}]"
+    yesterday = now - timedelta(days=1)
+    
+    date_from = yesterday.strftime('%Y%m%d%H%M')
+    date_to = now.strftime('%Y%m%d%H%M')
+    date_query = f"submittedDate:[{date_from} TO {date_to}]"
     
     print(f"🔍 Querying: cat:cs.AI AND {date_query}")
     search = arxiv.Search(
@@ -95,10 +95,9 @@ if __name__ == "__main__":
     
     results = list(client.results(search))
     if not results:
-        print("📭 No new papers found today. Skipping build.")
-        # Create empty docs folder so the deploy step doesn't crash
+        print("📭 No new papers found today.")
         os.makedirs("docs", exist_ok=True)
-        with open("docs/index.html", "w") as f: f.write("<h1>No new papers today. Check back tomorrow!</h1>")
+        with open("docs/index.html", "w") as f: f.write("<h1>No new papers today.</h1>")
     else:
         data = []
         for r in results:
@@ -106,22 +105,14 @@ if __name__ == "__main__":
                 "title": r.title,
                 "text_for_embedding": f"{r.title}. {r.summary}",
                 "url": r.pdf_url,
-                "date": r.published.strftime("%Y-%m-%d"),
-                "authors": ", ".join([a.name for a in r.authors])
+                "date": r.published.strftime("%Y-%m-%d")
             })
         
         df = pd.DataFrame(data)
-
-        # B. Process AI TLDRs
         df['tldr'] = generate_tldrs_local(df)
-        
-        # C. Apply Significance Filter
         df['status'] = df.apply(judge_significance, axis=1)
-        
-        # D. Save to Parquet
         df.to_parquet("papers.parquet")
         
-        # E. Run Embedding Atlas
         print("🧠 Creating Vector Map...")
         subprocess.run([
             "embedding-atlas", "papers.parquet",
@@ -131,11 +122,8 @@ if __name__ == "__main__":
             "--export-application", "site.zip"
         ], check=True)
         
-        # F. Prepare 'docs' folder for GitHub Pages
-        print("📦 Finalizing Deployment files...")
         os.makedirs("docs", exist_ok=True)
         os.system("unzip -o site.zip -d docs/")
-        # This empty file tells GitHub not to use Jekyll to process the site
         with open("docs/.nojekyll", "w") as f: f.write("")
 
     print("✨ Map update completed successfully!")
