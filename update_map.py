@@ -10,14 +10,12 @@ from datetime import datetime, timedelta, timezone
 
 DB_PATH = "database.parquet"
 
-# --- 1. THE SCRUBBER ---
+# --- 1. SCRUBBER & CLEANER ---
 def scrub_model_words(text):
-    # Strip model, models, modeling, etc. to force better cluster names
     pattern = re.compile(r'\bmodel[s|ing|ed]*\b', re.IGNORECASE)
     cleaned = pattern.sub("", text)
     return " ".join(cleaned.split())
 
-# --- 2. THE DIRECTORY CLEANER (Permission-Safe) ---
 def clear_docs_contents(target_dir):
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
@@ -30,28 +28,10 @@ def clear_docs_contents(target_dir):
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
         except Exception as e:
-            print(f"Failed to delete {file_path}. Reason: {e}")
+            print(f"Skipped {file_path}: {e}")
 
-# --- 3. REPUTATION & FETCH ---
-def calculate_reputation(row):
-    score = 0
-    full_text = f"{row['label']} {row['original_abstract']}".lower()
-    if any(inst in full_text for inst in ["mit", "stanford", "deepmind", "openai", "meta ai"]): score += 3
-    if "github.com" in full_text: score += 2
-    return "Reputation Enhanced" if score >= 4 else "Reputation Std."
-
-def fetch_results_with_retry(client, search, max_retries=5):
-    for i in range(max_retries):
-        try:
-            return list(client.results(search))
-        except Exception as e:
-            wait = (i + 1) * 60
-            time.sleep(wait)
-    raise Exception("Max retries exceeded")
-
-# --- 4. EXECUTION ---
+# --- 2. EXECUTION ---
 if __name__ == "__main__":
-    # CLEAR CONTENTS ONLY to avoid rsync permission issues
     clear_docs_contents("docs")
 
     now = datetime.now(timezone.utc)
@@ -61,25 +41,23 @@ if __name__ == "__main__":
         max_results=250
     )
     
-    results = fetch_results_with_retry(client, search)
+    results = list(client.results(search))
     if results:
         data_list = []
         for r in results:
-            # The 'text' column gets the scrubbed version for the vector/topic engine
-            scrubbed = scrub_model_words(f"{r.title}. {r.summary}")
+            # We provide a clean 'label' for the UI and a 'text' for the vectors
             data_list.append({
                 "label": r.title,
-                "text": scrubbed,
-                "original_abstract": r.summary,
+                "text": scrub_model_words(f"{r.title}. {r.summary}"),
                 "url": r.pdf_url,
-                "id": r.entry_id.split('/')[-1]
+                "id": r.entry_id.split('/')[-1],
+                "Reputation": "Standard" # Default for grouping
             })
             
         df = pd.DataFrame(data_list)
-        df['Reputation'] = df.apply(calculate_reputation, axis=1)
         df.to_parquet(DB_PATH, index=False)
         
-        print(f"🧠 Building Map...")
+        print("🧠 Building Map...")
         subprocess.run([
             "embedding-atlas", DB_PATH, 
             "--text", "text", 
@@ -87,15 +65,29 @@ if __name__ == "__main__":
             "--export-application", "site.zip"
         ], check=True)
         
-        # Unzip into the existing docs folder
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         
-        # Post-build UI Config
+        # --- THE FIX: MANUAL CONFIG OVERRIDE ---
         config_path = "docs/data/config.json"
         if os.path.exists(config_path):
-            with open(config_path, "r") as f: conf = json.load(f)
+            with open(config_path, "r") as f:
+                conf = json.load(f)
+            
+            # Force the tool to use 'label' for individual points
             conf["name_column"] = "label"
-            with open(config_path, "w") as f: json.dump(conf, f)
+            
+            # Force the tool to use 'label' as the fallback for cluster names
+            if "column_mappings" not in conf:
+                conf["column_mappings"] = {}
+            conf["column_mappings"]["label"] = "label"
+            conf["column_mappings"]["text"] = "text"
+            
+            # Tell the atlas player explicitly which column to show on hover
+            conf["label_column"] = "label"
+            
+            with open(config_path, "w") as f:
+                json.dump(conf, f, indent=4)
+            print("✅ Config manually mapped to 'label' column.")
 
         # UI Overlay
         index_file = "docs/index.html"
@@ -104,4 +96,4 @@ if __name__ == "__main__":
             with open(index_file, "r") as f: content = f.read()
             with open(index_file, "w") as f: f.write(content.replace("<body>", "<body>" + overlay))
 
-        print("✨ Process Successful!")
+        print("✨ Sync Complete!")
