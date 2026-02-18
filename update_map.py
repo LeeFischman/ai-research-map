@@ -21,7 +21,6 @@ def load_stop_words():
 STOP_WORDS = load_stop_words()
 
 def scrub_text(text):
-    # Physically remove words from your stop_words.csv
     words = text.split()
     cleaned = [w for w in words if w.lower().strip('.,()[]{}') not in STOP_WORDS]
     return " ".join(cleaned)
@@ -78,13 +77,13 @@ if __name__ == "__main__":
         df = pd.DataFrame(data_list)
         df['Reputation'] = df.apply(calculate_reputation, axis=1)
         
-        # WE ANCHOR ALL TOPICS TO ONE GENERIC NAME
-        # This prevents "Model" or "Reputation" from floating over points
-        df['topic'] = "Recent AI Papers" 
+        # --- THE LABEL FIX ---
+        # We fill 'topic' with a broad name to force the floating labels to return
+        df['topic'] = "AI Research Feed" 
         
         df.to_parquet(DB_PATH, index=False)
         
-        print(f"🧠 Building Map (Scrubbing {len(STOP_WORDS)} words)...")
+        print(f"🧠 Building Map...")
         subprocess.run([
             "embedding-atlas", DB_PATH, 
             "--text", "text", 
@@ -100,42 +99,30 @@ if __name__ == "__main__":
             with open(config_path, "r") as f:
                 conf = json.load(f)
             
-            # Map labels strictly to titles
+            # Ensure titles show on hover
             conf["name_column"] = "title"
             conf["label_column"] = "title"
             
-            # Lock the Reputation column for coloring only
+            # Ensure metadata survives
             if "column_mappings" not in conf:
                 conf["column_mappings"] = {}
             conf["column_mappings"]["title"] = "title"
             conf["column_mappings"]["Reputation"] = "Reputation"
+            conf["column_mappings"]["topic"] = "topic" # Crucial
             conf["column_mappings"]["url"] = "url"
             
-            # USE 'topic' COLUMN FOR FLOATING TEXT (Unified name)
+            # FORCE the floating labels to use our 'topic' column
             conf["topic_label_column"] = "topic"
-            # USE 'Reputation' FOR COLORING ONLY
             conf["color_by"] = "Reputation"
             
             with open(config_path, "w") as f:
                 json.dump(conf, f, indent=4)
-            print("✅ Config locked: Unified labels, Reputation for color.")
+            print("✅ Labels forced to 'AI Research Feed'.")
 
         # --- UI MENU ---
         index_file = "docs/index.html"
         if os.path.exists(index_file):
-            overlay = (
-                '<div id="lee-menu" style="position:fixed; top:20px; left:20px; z-index:999999;">'
-                '<button onclick="var t=document.getElementById(\'lee-tab\'); '
-                't.style.display=t.style.display===\'none\'?\'block\':\'none\'" '
-                'style="background:#2563eb; color:white; border:none; padding:10px 15px; '
-                'border-radius:8px; cursor:pointer; font-weight:bold;">⚙️ Menu</button>'
-                '<div id="lee-tab" style="display:none; margin-top:10px; width:250px; '
-                'background:#111827; color:white; padding:15px; border-radius:10px; '
-                'font-family:sans-serif; border:1px solid #374151;">'
-                '<h3>AI Research Map</h3>'
-                '<p style="font-size:12px;">By Lee Fischman</p>'
-                '</div></div>'
-            )
+            overlay = '<div id="lee-menu" style="position:fixed; top:20px; left:20px; z-index:999999;"><button onclick="var t=document.getElementById(\'lee-tab\'); t.style.display=t.style.display===\'none\'?\'block\':\'none\'" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold;">⚙️ Menu</button><div id="lee-tab" style="display:none; margin-top:10px; width:250px; background:#111827; color:white; padding:15px; border-radius:10px; font-family:sans-serif; border:1px solid #374151;"><h3>AI Research Map</h3><p style="font-size:12px;">By Lee Fischman</p></div></div>'
             with open(index_file, "r") as f: content = f.read()
             with open(index_file, "w") as f: f.write(content.replace("<body>", "<body>" + overlay))
 
