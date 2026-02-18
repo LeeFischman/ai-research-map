@@ -10,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 
 DB_PATH = "database.parquet"
 
-# --- 1. THE SCRUBBER (Keep this to prevent the 'Model' return) ---
+# --- 1. THE SCRUBBER ---
 def scrub_model_words(text):
+    # Remove "model" so the vector engine focuses on content
     pattern = re.compile(r'\bmodel[s|ing|ed]*\b', re.IGNORECASE)
     cleaned = pattern.sub("", text)
     return " ".join(cleaned.split())
@@ -30,7 +31,28 @@ def clear_docs_contents(target_dir):
         except Exception as e:
             print(f"Skipped {file_path}: {e}")
 
-# --- 2. EXECUTION ---
+# --- 2. REPUTATION LOGIC ---
+INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
+    "MIT", "Stanford", "CMU", "UC Berkeley", "Harvard", "DeepMind", "OpenAI", "Anthropic", "FAIR", "Meta AI"
+]) + r")\b", re.IGNORECASE)
+
+def calculate_reputation(row):
+    score = 0
+    full_text = f"{row['title']} {row['original_abstract']}".lower()
+    if INSTITUTION_PATTERN.search(full_text): score += 3
+    if any(k in full_text for k in ['github.com', 'huggingface.co']): score += 2
+    return "Reputation Enhanced" if score >= 4 else "Reputation Std"
+
+# --- 3. FETCH & PREPARE ---
+def fetch_results_with_retry(client, search, max_retries=5):
+    for i in range(max_retries):
+        try:
+            return list(client.results(search))
+        except Exception as e:
+            wait = (i + 1) * 60
+            time.sleep(wait)
+    raise Exception("Max retries exceeded")
+
 if __name__ == "__main__":
     clear_docs_contents("docs")
 
@@ -46,16 +68,26 @@ if __name__ == "__main__":
         data_list = []
         for r in results:
             data_list.append({
-                "label": r.title,
-                "text": scrub_model_words(f"{r.title}. {r.summary}"),
+                "title": r.title,                 # Standard name for UI
+                "original_abstract": r.summary,   # Keep for metadata
+                "text": scrub_model_words(f"{r.title}. {r.summary}"), # Vectors
                 "url": r.pdf_url,
                 "id": r.entry_id.split('/')[-1]
             })
             
         df = pd.DataFrame(data_list)
+        
+        # --- THE TROJAN HORSE STRATEGY ---
+        # 1. Create the Reputation column
+        df['group'] = df.apply(calculate_reputation, axis=1)
+        
+        # 2. Duplicate it as 'topic' to force the tool to use it for cluster names
+        # This replaces "Model" with "Reputation Enhanced"
+        df['topic'] = df['group']
+        
         df.to_parquet(DB_PATH, index=False)
         
-        print("🧠 Building Map...")
+        print("🧠 Building Map (Forced Grouping)...")
         subprocess.run([
             "embedding-atlas", DB_PATH, 
             "--text", "text", 
@@ -65,32 +97,32 @@ if __name__ == "__main__":
         
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         
-        # --- THE BRUTE FORCE CONFIG FIX ---
+        # --- FINAL CONFIG OVERRIDE ---
         config_path = "docs/data/config.json"
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 conf = json.load(f)
             
-            # We are mapping EVERY name-related field to 'label'
-            # This covers various versions of the Atlas player
-            conf["name_column"] = "label"
-            conf["label_column"] = "label"
-            conf["text_column"] = "label" 
-            conf["point_label"] = "label"
+            # 1. Force Title Display
+            conf["name_column"] = "title"
+            conf["label_column"] = "title"
             
-            # If the tool generated empty clusters, this forces it to show something
-            if "topic_label_column" in conf:
-                conf["topic_label_column"] = "label"
-                
-            # Ensure the browser knows these columns exist
+            # 2. Force Grouping by Reputation
+            # By setting 'topic_label_column' to 'group', we ensure the big text 
+            # over the clusters is your Reputation data, not "Model".
+            conf["topic_label_column"] = "group"
+            conf["color_by"] = "group"
+            
+            # 3. Ensure Columns Exist in Browser Map
             if "column_mappings" not in conf:
                 conf["column_mappings"] = {}
-            conf["column_mappings"]["label"] = "label"
-            conf["column_mappings"]["text"] = "text"
+            conf["column_mappings"]["title"] = "title"
+            conf["column_mappings"]["group"] = "group"
+            conf["column_mappings"]["url"] = "url"
             
             with open(config_path, "w") as f:
                 json.dump(conf, f, indent=4)
-            print("✅ Config force-mapped for all label variations.")
+            print("✅ Config locked: Title=Label, Group=Reputation.")
 
         # --- UI MENU ---
         index_file = "docs/index.html"
@@ -101,4 +133,4 @@ if __name__ == "__main__":
             with open(index_file, "w") as f: 
                 f.write(content.replace("<body>", "<body>" + overlay))
 
-        print("✨ Deployment Complete!")
+        print("✨ Sync Complete!")
