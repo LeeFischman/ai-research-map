@@ -9,14 +9,15 @@ import shutil
 from datetime import datetime, timedelta, timezone
 
 DB_PATH = "database.parquet"
+LABELS_PATH = "manual_labels.csv"
 STOPWORDS_PATH = "stop_words.csv"
 
-# --- 1. THE DICTIONARY SCRUBBER ---
+# --- 1. DATA PREP ---
 def load_stop_words():
     if os.path.exists(STOPWORDS_PATH):
         sw_df = pd.read_csv(STOPWORDS_PATH)
         return set(sw_df['word'].str.lower().tolist())
-    return {"model", "models", "modeling"}
+    return set()
 
 STOP_WORDS = load_stop_words()
 
@@ -25,116 +26,79 @@ def scrub_text(text):
     cleaned = [w for w in words if w.lower().strip('.,()[]{}') not in STOP_WORDS]
     return " ".join(cleaned)
 
-def clear_docs_contents(target_dir):
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir, exist_ok=True)
-        return
-    for filename in os.listdir(target_dir):
-        file_path = os.path.join(target_dir, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            print(f"Skipped {file_path}: {e}")
-
-# --- 2. REPUTATION LOGIC ---
-INSTITUTION_PATTERN = re.compile(r"\b(" + "|".join([
-    "MIT", "Stanford", "CMU", "UC Berkeley", "Harvard", "DeepMind", "OpenAI", "Anthropic", "FAIR", "Meta AI"
-]) + r")\b", re.IGNORECASE)
-
-def calculate_reputation(row):
-    score = 0
-    full_text = f"{row['title']} {row['summary']}".lower()
-    if INSTITUTION_PATTERN.search(full_text): score += 3
-    if any(k in full_text for k in ['github.com', 'huggingface.co']): score += 2
-    return "Reputation Enhanced" if score >= 4 else "Reputation Std"
-
-# --- 3. REINFORCED FETCH (429 Protection) ---
-def fetch_results_with_retry(client, search, max_retries=5):
-    for i in range(max_retries):
+def fetch_results_with_retry(client, search):
+    for i in range(5):
         try:
             return list(client.results(search))
         except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "Too Many Requests" in err_msg:
-                # Heavy backoff for 429s: 2min, 4min, 8min...
-                wait = (2 ** i) * 120 
-                print(f"🛑 arXiv Rate Limit (429). Cooling down for {wait}s...")
-                time.sleep(wait)
-            else:
-                wait = 30
-                print(f"⚠️ Connection error: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-    raise Exception("Max retries exceeded. arXiv is blocking this IP.")
+            time.sleep((2**i) * 30)
+    return []
 
 if __name__ == "__main__":
-    clear_docs_contents("docs")
+    if os.path.exists("docs"): shutil.rmtree("docs")
+    os.makedirs("docs")
 
-    # Increased delay_seconds to 5 to avoid triggering the 429 in the first place
-    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
-    
+    client = arxiv.Client(page_size=100, delay_seconds=5)
     now = datetime.now(timezone.utc)
     search = arxiv.Search(
-        query=f"cat:cs.AI AND submittedDate:[{(now-timedelta(days=5)).strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]", 
-        max_results=250
+        query=f"cat:cs.AI AND submittedDate:[{(now-timedelta(days=7)).strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]", 
+        max_results=200
     )
     
     results = fetch_results_with_retry(client, search)
     if results:
-        data_list = []
+        data = []
         for r in results:
-            data_list.append({
+            # We preserve title/abstract for the user but scrub the 'text' column used for the AI
+            data.append({
                 "title": r.title,
                 "summary": r.summary,
-                "text": scrub_text(f"{r.title}. {r.summary}"), 
+                "text": scrub_text(f"{r.title} {r.summary}"),
                 "url": r.pdf_url,
-                "id": r.entry_id.split('/')[-1],
-                "topic": "AI Research Feed" # Forced floating label
+                "id": r.entry_id.split('/')[-1]
             })
             
-        df = pd.DataFrame(data_list)
-        df['Reputation'] = df.apply(calculate_reputation, axis=1)
-        df.to_parquet(DB_PATH, index=False)
+        df = pd.DataFrame(data)
         
-        print(f"🧠 Building Map...")
+        # Reputation logic (strictly for coloring)
+        inst_pat = re.compile(r"\b(MIT|Stanford|CMU|Berkeley|Harvard|DeepMind|OpenAI|Anthropic|FAIR|Meta)\b", re.I)
+        def get_rep(row):
+            score = 3 if inst_pat.search(f"{row['title']} {row['summary']}") else 0
+            if 'github.com' in row['summary'].lower(): score += 2
+            return "Enhanced" if score >= 4 else "Standard"
+        
+        df['Reputation'] = df.apply(get_rep, axis=1)
+        df.to_parquet(DB_PATH, index=False)
+
+        # --- THE BRUTE FORCE LABEL FIX ---
+        # We tell the tool: "Don't guess. Here is the label for the center of the map."
+        # This ensures SOMETHING shows up even when stopwords are all gone.
+        labels_df = pd.DataFrame([
+            {"x": 0, "y": 0, "text": "Recent AI Research", "level": 0, "priority": 1}
+        ])
+        labels_df.to_csv(LABELS_PATH, index=False)
+
+        print("🧠 Building Map with Manual Labels...")
         subprocess.run([
             "embedding-atlas", DB_PATH, 
             "--text", "text", 
+            "--labels", LABELS_PATH, # <--- FORCING THE LABEL
             "--model", "allenai/specter2_base", 
             "--export-application", "site.zip"
         ], check=True)
         
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         
-        # --- CONFIG FIX ---
+        # --- UI CONFIG ---
         config_path = "docs/data/config.json"
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                conf = json.load(f)
-            
+            with open(config_path, "r") as f: conf = json.load(f)
             conf["name_column"] = "title"
-            conf["label_column"] = "title"
-            
-            if "column_mappings" not in conf:
-                conf["column_mappings"] = {}
-            conf["column_mappings"]["title"] = "title"
-            conf["column_mappings"]["Reputation"] = "Reputation"
-            conf["column_mappings"]["topic"] = "topic"
-            conf["column_mappings"]["url"] = "url"
-            
-            conf["topic_label_column"] = "topic"
-            conf["color_by"] = "Reputation"
-            
-            with open(config_path, "w") as f:
-                json.dump(conf, f, indent=4)
-
-        # --- UI MENU ---
-        index_file = "docs/index.html"
-        if os.path.exists(index_file):
-            overlay = '<div id="lee-menu" style="position:fixed; top:20px; left:20px; z-index:999999;"><button onclick="var t=document.getElementById(\'lee-tab\'); t.style.display=t.style.display===\'none\'?\'block\':\'none\'" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold;">⚙️ Menu</button><div id="lee-tab" style="display:none; margin-top:10px; width:250px; background:#111827; color:white; padding:15px; border-radius:10px; font-family:sans-serif; border:1px solid #374151;"><h3>AI Research Map</h3><p style="font-size:12px;">By Lee Fischman</p></div></div>'
-            with open(index_file, "r") as f: content = f.read()
-            with open(index_file, "w") as f: f.write(content.replace("<body>", "<body>" + overlay))
+            conf.update({
+                "color_by": "Reputation",
+                "topic_label_column": None, # Disable the tool's broken auto-labels
+                "column_mappings": {"title":"title", "Reputation":"Reputation", "url":"url"}
+            })
+            with open(config_path, "w") as f: json.dump(conf, f, indent=4)
 
         print("✨ Deployment Successful!")
