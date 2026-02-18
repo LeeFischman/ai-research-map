@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 DB_PATH = "database.parquet"
 
-# --- 1. SCRUBBER & CLEANER ---
+# --- 1. THE SCRUBBER (Keep this to prevent the 'Model' return) ---
 def scrub_model_words(text):
     pattern = re.compile(r'\bmodel[s|ing|ed]*\b', re.IGNORECASE)
     cleaned = pattern.sub("", text)
@@ -45,13 +45,11 @@ if __name__ == "__main__":
     if results:
         data_list = []
         for r in results:
-            # We provide a clean 'label' for the UI and a 'text' for the vectors
             data_list.append({
                 "label": r.title,
                 "text": scrub_model_words(f"{r.title}. {r.summary}"),
                 "url": r.pdf_url,
-                "id": r.entry_id.split('/')[-1],
-                "Reputation": "Standard" # Default for grouping
+                "id": r.entry_id.split('/')[-1]
             })
             
         df = pd.DataFrame(data_list)
@@ -67,33 +65,40 @@ if __name__ == "__main__":
         
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         
-        # --- THE FIX: MANUAL CONFIG OVERRIDE ---
+        # --- THE BRUTE FORCE CONFIG FIX ---
         config_path = "docs/data/config.json"
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 conf = json.load(f)
             
-            # Force the tool to use 'label' for individual points
+            # We are mapping EVERY name-related field to 'label'
+            # This covers various versions of the Atlas player
             conf["name_column"] = "label"
+            conf["label_column"] = "label"
+            conf["text_column"] = "label" 
+            conf["point_label"] = "label"
             
-            # Force the tool to use 'label' as the fallback for cluster names
+            # If the tool generated empty clusters, this forces it to show something
+            if "topic_label_column" in conf:
+                conf["topic_label_column"] = "label"
+                
+            # Ensure the browser knows these columns exist
             if "column_mappings" not in conf:
                 conf["column_mappings"] = {}
             conf["column_mappings"]["label"] = "label"
             conf["column_mappings"]["text"] = "text"
             
-            # Tell the atlas player explicitly which column to show on hover
-            conf["label_column"] = "label"
-            
             with open(config_path, "w") as f:
                 json.dump(conf, f, indent=4)
-            print("✅ Config manually mapped to 'label' column.")
+            print("✅ Config force-mapped for all label variations.")
 
-        # UI Overlay
+        # --- UI MENU ---
         index_file = "docs/index.html"
         if os.path.exists(index_file):
             overlay = '<div id="lee-menu" style="position:fixed; top:20px; left:20px; z-index:999999;"><button onclick="var t=document.getElementById(\'lee-tab\'); t.style.display=t.style.display===\'none\'?\'block\':\'none\'" style="background:#2563eb; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold;">⚙️ Menu</button><div id="lee-tab" style="display:none; margin-top:10px; width:250px; background:#111827; color:white; padding:15px; border-radius:10px; font-family:sans-serif; border:1px solid #374151;"><h3>AI Research Map</h3><p style="font-size:12px;">By Lee Fischman</p></div></div>'
-            with open(index_file, "r") as f: content = f.read()
-            with open(index_file, "w") as f: f.write(content.replace("<body>", "<body>" + overlay))
+            with open(index_file, "r") as f: 
+                content = f.read()
+            with open(index_file, "w") as f: 
+                f.write(content.replace("<body>", "<body>" + overlay))
 
-        print("✨ Sync Complete!")
+        print("✨ Deployment Complete!")
