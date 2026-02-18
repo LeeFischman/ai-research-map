@@ -51,18 +51,37 @@ def calculate_reputation(row):
     if any(k in full_text for k in ['github.com', 'huggingface.co']): score += 2
     return "Reputation Enhanced" if score >= 4 else "Reputation Std"
 
-# --- 3. FETCH & PREPARE ---
+# --- 3. REINFORCED FETCH (429 Protection) ---
+def fetch_results_with_retry(client, search, max_retries=5):
+    for i in range(max_retries):
+        try:
+            return list(client.results(search))
+        except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "Too Many Requests" in err_msg:
+                # Heavy backoff for 429s: 2min, 4min, 8min...
+                wait = (2 ** i) * 120 
+                print(f"🛑 arXiv Rate Limit (429). Cooling down for {wait}s...")
+                time.sleep(wait)
+            else:
+                wait = 30
+                print(f"⚠️ Connection error: {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+    raise Exception("Max retries exceeded. arXiv is blocking this IP.")
+
 if __name__ == "__main__":
     clear_docs_contents("docs")
 
+    # Increased delay_seconds to 5 to avoid triggering the 429 in the first place
+    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=10)
+    
     now = datetime.now(timezone.utc)
-    client = arxiv.Client(page_size=100, delay_seconds=10)
     search = arxiv.Search(
         query=f"cat:cs.AI AND submittedDate:[{(now-timedelta(days=5)).strftime('%Y%m%d%H%M')} TO {now.strftime('%Y%m%d%H%M')}]", 
         max_results=250
     )
     
-    results = list(client.results(search))
+    results = fetch_results_with_retry(client, search)
     if results:
         data_list = []
         for r in results:
@@ -71,16 +90,12 @@ if __name__ == "__main__":
                 "summary": r.summary,
                 "text": scrub_text(f"{r.title}. {r.summary}"), 
                 "url": r.pdf_url,
-                "id": r.entry_id.split('/')[-1]
+                "id": r.entry_id.split('/')[-1],
+                "topic": "AI Research Feed" # Forced floating label
             })
             
         df = pd.DataFrame(data_list)
         df['Reputation'] = df.apply(calculate_reputation, axis=1)
-        
-        # --- THE LABEL FIX ---
-        # We fill 'topic' with a broad name to force the floating labels to return
-        df['topic'] = "AI Research Feed" 
-        
         df.to_parquet(DB_PATH, index=False)
         
         print(f"🧠 Building Map...")
@@ -93,31 +108,27 @@ if __name__ == "__main__":
         
         os.system("unzip -o site.zip -d docs/ && touch docs/.nojekyll")
         
-        # --- THE CONFIG LOCK ---
+        # --- CONFIG FIX ---
         config_path = "docs/data/config.json"
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 conf = json.load(f)
             
-            # Ensure titles show on hover
             conf["name_column"] = "title"
             conf["label_column"] = "title"
             
-            # Ensure metadata survives
             if "column_mappings" not in conf:
                 conf["column_mappings"] = {}
             conf["column_mappings"]["title"] = "title"
             conf["column_mappings"]["Reputation"] = "Reputation"
-            conf["column_mappings"]["topic"] = "topic" # Crucial
+            conf["column_mappings"]["topic"] = "topic"
             conf["column_mappings"]["url"] = "url"
             
-            # FORCE the floating labels to use our 'topic' column
             conf["topic_label_column"] = "topic"
             conf["color_by"] = "Reputation"
             
             with open(config_path, "w") as f:
                 json.dump(conf, f, indent=4)
-            print("✅ Labels forced to 'AI Research Feed'.")
 
         # --- UI MENU ---
         index_file = "docs/index.html"
@@ -126,4 +137,4 @@ if __name__ == "__main__":
             with open(index_file, "r") as f: content = f.read()
             with open(index_file, "w") as f: f.write(content.replace("<body>", "<body>" + overlay))
 
-        print("✨ Sync Complete!")
+        print("✨ Deployment Successful!")
