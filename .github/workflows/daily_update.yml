@@ -3,7 +3,7 @@ name: Update AI Research Map
 on:
   schedule:
     # Runs at 14:00 UTC every day
-    - cron: '0 14 * * *'
+    # - cron: '0 14 * * *'
   workflow_dispatch: # Allows you to run it manually for testing
 
 permissions:
